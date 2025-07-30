@@ -1,0 +1,5 @@
+main.ipynb
+legal_rag.duckdb
+.env
+__pycache__/
+.ipynb_checkpoints/
