@@ -5,12 +5,26 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 import re
 from openai import OpenAI
+import json
+from qdrant_client import QdrantClient, models
+from fastembed import TextEmbedding
+import uuid
+from sentence_transformers import SentenceTransformer
 
 # environment variables
 load_dotenv()
-CASELAW_API = os.getenv("CASELAW_API")
+CASELAW_API_KEY = os.getenv("CASELAW_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-HEADERS = {"Authorization": f"Token {CASELAW_API}"}
+
+# TODO: make project configs
+SEARCH_METHOD = os.getenv("SEARCH_METHOD")
+MODEL_HANDLE = os.getenv("MODEL_HANDLE")
+EMBEDDER = SentenceTransformer('all-MiniLM-L6-v2')
+COLLECTION_NAME = "caselaw-cases"
+SIZE = 384
+LIMIT = 1
+
+HEADERS = {"Authorization": f"Token {CASELAW_API_KEY}"}
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -133,37 +147,19 @@ def flatten_opinions(all_data):
     return docs
 
 
-if __name__ == "__main__":
-    all_data = process_docket(court='scotus', num_dockets=5)
-    docs = flatten_opinions(all_data)
-
-    text_fields = ['opinion_text']
-    keyword_fields = ['docket_number', 'court_id', 'judges', 'type']
-    index = minsearch.Index(text_fields=text_fields, keyword_fields=keyword_fields)
-    index.fit(docs)
-
-    query = input("Please enter your search query: ")
-
-    filters = {"court_id": "scotus", "type": "010combined"}
-    boosts = {"opinion_text": 1.5}
-    num_results = 5
-    results = index.search(query, filter_dict=filters, boost_dict=boosts, num_results=num_results)
-
-    if not results:
-        print("No relevant documents found. Try a different query.")
-        exit()
-
+def display_results(results):
     print("\nTop Retrieved Cases:\n")
     for idx, res in enumerate(results):
         print(f"[{idx}] Case: {res['case_name']} | Author: {res['author']} | URL: {res['download_url']}")
 
+
+def get_selected_indices(results):
     selected_indices_input = input("\nEnter indices of cases to include in context (comma-separated): ")
     selected_indices = [int(i.strip()) for i in selected_indices_input.split(",") if i.strip().isdigit()]
+    return selected_indices
 
-    if not selected_indices:
-        print("No cases selected. Exiting.")
-        exit()
 
+def build_context(results, selected_indices):
     context = ""
     for idx in selected_indices:
         if 0 <= idx < len(results):
@@ -173,11 +169,15 @@ if __name__ == "__main__":
                 f"Opinion Type: {result['type']}\n"
                 f"Case Text: {result['opinion_text']}\n\n"
             )
+    return context
 
+
+def get_generation_question(query):
     generation_question = input(f"\nEnter the QUESTION you'd like an answer to (press Enter to use query: '{query}'): ")
-    if not generation_question.strip():
-        generation_question = query
+    return generation_question.strip() or query
 
+
+def format_prompt(question, context):
     prompt_template = """
         You are a legal research assistant. Answer the QUESTION using only the CONTEXT provided below.
         If the CONTEXT lacks information to answer, respond accordingly and do not make assumptions.
@@ -187,20 +187,184 @@ if __name__ == "__main__":
         CONTEXT:
         {context}
     """.strip()
+    return prompt_template.format(question=question, context=context)
 
-    final_prompt = prompt_template.format(
-        question=generation_question,
-        context=context
+
+def chunk_text(text, max_tokens=500):
+    """Yield chunks of text up to max_tokens words."""
+    words = text.split()
+    for i in range(0, len(words), max_tokens):
+        yield ' '.join(words[i:i+max_tokens])
+
+
+def create_points_from_cases(case_data_raw):
+    """Process case data and return a list of PointStruct with precomputed embeddings."""
+    points = []
+
+    for case in case_data_raw:
+        opinion_text = case.get('opinion_text', '')
+        
+        for chunk in chunk_text(opinion_text):
+            # Embed the chunk using SentenceTransformer
+            embedding = EMBEDDER.encode(chunk).tolist()
+
+            # Create PointStruct with precomputed vector
+            point = models.PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embedding,
+                payload={
+                    "case_name": case.get('case_name', ''),
+                    "docket_number": case.get('docket_number', ''),
+                    "court_id": case.get('court_id', ''),
+                    "judges": case.get('judges', ''),
+                    "type": case.get('type', ''),
+                    "author": case.get('author', ''),
+                    "sha1": case.get('sha1', ''),
+                    "download_url": case.get('download_url', '')
+                }
+            )
+            points.append(point)
+    
+    return points
+
+
+def vector_search(client, query, limit=1):
+    query_embedding = EMBEDDER.encode(query).tolist()
+
+    response = client.query_points(
+        collection_name=COLLECTION_NAME,
+        query=query_embedding,
+        limit=limit,
+        with_payload=True
     )
+    return response.points
+
+
+def fetch_opinion_text_by_docket(docket_number):
+    """
+    Fetches the docket by docket_number and returns the first available opinion_text.
+    """
+    url = "https://www.courtlistener.com/api/rest/v4/dockets/"
+    resp = requests.get(url, params={"docket_number": docket_number}, headers=HEADERS)
+    results = resp.json().get("results", [])
+    if not results:
+        return ""
+    docket = results[0]
+    for cluster_url in docket.get("clusters", []):
+        cluster_resp = requests.get(cluster_url, headers=HEADERS)
+        cluster = cluster_resp.json()
+        for opinion_url in cluster.get("sub_opinions", []):
+            opinion_resp = requests.get(opinion_url, headers=HEADERS)
+            opinion = opinion_resp.json()
+            for field in ['html_with_citations', 'html_columbia', 'html_lawbox',
+                          'xml_harvard', 'html_anon_2020', 'html', 'plain_text']:
+                if opinion.get(field):
+                    if field.startswith('html') or field.startswith('xml'):
+                        return clean_text(opinion[field])
+                    else:
+                        return re.sub(r'\s+', ' ', opinion[field].strip())
+    return ""
+
+
+def run_minsearch(docs, query):
+    text_fields = ['opinion_text']
+    keyword_fields = ['docket_number', 'court_id', 'judges', 'type']
+    index = minsearch.Index(text_fields=text_fields, keyword_fields=keyword_fields)
+    index.fit(docs)
+
+    filters = {"court_id": "scotus", "type": "010combined"}
+    boosts = {"opinion_text": 1.5}
+    num_results = 5
+    results = index.search(query, filter_dict=filters, boost_dict=boosts, num_results=num_results)
+
+    if not results:
+        print("No relevant documents found. Try a different query.")
+        return
+
+    display_results(results)
+    selected_indices = get_selected_indices(results)
+    if not selected_indices:
+        print("No cases selected. Exiting.")
+        return
+
+    context = build_context(results, selected_indices)
+    generation_question = get_generation_question(query)
+    final_prompt = format_prompt(generation_question, context)
 
     response = openai_client.chat.completions.create(
-        model="gpt-4o",  # Use "gpt-3.5-turbo" for cost efficiency if needed
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": "You are a helpful legal research assistant."},
             {"role": "user", "content": final_prompt}
         ],
         temperature=0.2
     )
-
     print("\nModel Response:\n")
     print(response.choices[0].message.content.strip())
+
+
+def run_vectorsearch(docs, query):
+    client = QdrantClient("http://localhost:6333")
+    try:
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=models.VectorParams(
+                size=SIZE,
+                distance=models.Distance.COSINE
+            )
+        )
+    except Exception:
+        pass  # Collection may already exist
+
+    points = create_points_from_cases(docs)
+    client.upsert(collection_name=COLLECTION_NAME, points=points)
+
+    results = vector_search(client, query, limit=LIMIT)
+    if not results:
+        print("No relevant documents found. Try a different query.")
+        return
+
+    top_result = results[0].payload
+    docket_number = top_result.get('docket_number')
+    print(f"Top result: {top_result.get('case_name')} ({docket_number})")
+    print(f"URL: {top_result.get('download_url')}")
+
+    opinion_text = fetch_opinion_text_by_docket(docket_number)
+    if not opinion_text:
+        print("Could not fetch opinion text for the selected docket.")
+        return
+
+    context = f"Case Name: {top_result.get('case_name')}\nOpinion Type: {top_result.get('type')}\nCase Text: {opinion_text}\n"
+    generation_question = get_generation_question(query)
+    final_prompt = format_prompt(generation_question, context)
+
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "You are a helpful legal research assistant."},
+            {"role": "user", "content": final_prompt}
+        ],
+        temperature=0.2
+    )
+    print("\nModel Response:\n")
+    print(response.choices[0].message.content.strip())
+
+
+def main():
+    all_data = process_docket(court='scotus', num_dockets=3)
+    docs = flatten_opinions(all_data)
+
+    with open("cases.json", "w", encoding="utf-8") as f:
+        json.dump(docs, f, ensure_ascii=False, indent=2)
+
+    query = input("Please enter your search query: ")
+
+    if SEARCH_METHOD == "minsearch":
+        run_minsearch(docs, query)
+    elif SEARCH_METHOD == "vectorsearch":
+        run_vectorsearch(docs, query)
+    else:
+        print("Invalid SEARCH_METHOD specified.")
+
+if __name__ == "__main__":
+    main()
