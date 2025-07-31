@@ -1,5 +1,11 @@
-main.ipynb
-legal_rag.duckdb
+# files
 .env
-__pycache__/
-.ipynb_checkpoints/
+*.ipynb
+*.json
+
+# folders
+__pycache__/*
+.ipynb_checkpoints/*
+experiments/*
+qdrant_storage/*
+
