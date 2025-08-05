@@ -5,8 +5,10 @@
 
 # folders
 __pycache__/*
+.claude/*
 .ipynb_checkpoints/*
 experiments/*
 qdrant_storage/*
 temp_store/*
 data/*
+deleted/*

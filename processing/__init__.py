@@ -1,16 +1,15 @@
 """
-Processing module for legal case search system.
+Processing module for legal document pipeline.
 
-This module contains specialized processors for different search methods:
-- KeywordProcessor: Handles TF-IDF keyword search processing
-- VectorProcessor: Handles dense vector embeddings for semantic search
-- HybridProcessor: Handles combined dense + sparse vector processing
+This module contains processors for the legal document processing pipeline:
+- smart_chunking: Semantic chunking with Legal BERT
+- vector_processor: Dense vector embeddings for semantic search
 
-All processors share common utilities and configurations.
+The pipeline focuses on ingestion, chunking, and vector processing.
 """
 
-from .keyword_processor import KeywordProcessor
-from .vector_processor import VectorProcessor
-from .hybrid_processor import HybridProcessor
+# Main processing components are imported directly by their module names
+# e.g., from processing.smart_chunking import SemanticChunker
+# e.g., from processing.vector_processor import EnhancedVectorProcessor
 
-__all__ = ['KeywordProcessor', 'VectorProcessor', 'HybridProcessor']
+__all__ = ['smart_chunking', 'vector_processor']
