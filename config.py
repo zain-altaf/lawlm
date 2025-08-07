@@ -99,16 +99,31 @@ class QdrantConfig:
     api_key: Optional[str] = None
     timeout: int = 30
     prefer_grpc: bool = False
+    use_cloud: bool = False  # Flag to indicate cloud usage
+    cluster_name: Optional[str] = None  # Cloud cluster name for reference
+    free_tier_limit_mb: float = 1024.0  # 1GB free tier limit
     
     def __post_init__(self):
         # Check environment variables
         env_url = os.getenv("QDRANT_URL")
         if env_url:
             self.url = env_url
+            # Detect if this is a cloud URL
+            if "cloud.qdrant.io" in env_url or "qdrant.tech" in env_url:
+                self.use_cloud = True
         
         env_api_key = os.getenv("QDRANT_API_KEY")
         if env_api_key:
             self.api_key = env_api_key
+            
+        env_cluster_name = os.getenv("QDRANT_CLUSTER_NAME")
+        if env_cluster_name:
+            self.cluster_name = env_cluster_name
+            
+        # If API key is provided, assume cloud usage
+        if self.api_key and not self.use_cloud:
+            if "localhost" not in self.url and "127.0.0.1" not in self.url:
+                self.use_cloud = True
 
 
 @dataclass
@@ -266,11 +281,30 @@ class PipelineConfig:
         # Test Qdrant connection (non-blocking)
         try:
             from qdrant_client import QdrantClient
-            client = QdrantClient(self.qdrant.url, timeout=5)
+            
+            # Create client with or without API key
+            if self.qdrant.api_key:
+                client = QdrantClient(
+                    url=self.qdrant.url, 
+                    api_key=self.qdrant.api_key,
+                    timeout=5
+                )
+            else:
+                client = QdrantClient(self.qdrant.url, timeout=5)
+                
             client.get_collections()
-            logger.info(f"✅ Qdrant connection successful: {self.qdrant.url}")
+            connection_type = "cloud" if self.qdrant.use_cloud else "local"
+            logger.info(f"✅ Qdrant {connection_type} connection successful: {self.qdrant.url}")
+            
         except Exception as e:
             issues.append(f"⚠️ Cannot connect to Qdrant at {self.qdrant.url}: {e}")
+            
+        # Check cloud-specific requirements
+        if self.qdrant.use_cloud:
+            if not self.qdrant.api_key:
+                issues.append("❌ QDRANT_API_KEY is required for cloud usage")
+            if "localhost" in self.qdrant.url or "127.0.0.1" in self.qdrant.url:
+                issues.append("⚠️ Cloud flag enabled but URL appears to be local")
         
         # Log validation results
         if issues:
@@ -310,7 +344,10 @@ class PipelineConfig:
             },
             'qdrant': {
                 'url': self.qdrant.url,
-                'api_key_configured': bool(self.qdrant.api_key)
+                'api_key_configured': bool(self.qdrant.api_key),
+                'use_cloud': self.qdrant.use_cloud,
+                'cluster_name': self.qdrant.cluster_name,
+                'free_tier_limit_mb': self.qdrant.free_tier_limit_mb
             },
             'processing': {
                 'working_directory': self.processing.working_directory,

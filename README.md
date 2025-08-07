@@ -1,28 +1,36 @@
 # Legal Document Processing Pipeline
 
-A robust, production-ready pipeline for processing legal documents from CourtListener API with semantic chunking and vector search capabilities. Designed for efficient ingestion, intelligent chunking, and scalable vector indexing of legal case data.
+A robust, production-ready pipeline for processing legal documents from CourtListener API with semantic chunking and vector search capabilities. Designed for efficient ingestion, intelligent chunking, and scalable vector indexing of legal case data with **persistent cloud storage**.
 
 ## 🎯 Overview
 
-This pipeline focuses on the core functionality of **correctly ingesting, chunking, and pushing data** for legal document search. It provides:
+This pipeline focuses on the core functionality of **correctly ingesting, chunking, and pushing data** for legal document search with **permanent cloud storage**. It provides:
 
 - **Smart Data Ingestion**: Batch processing from CourtListener API with resume capability
 - **Semantic Chunking**: Legal BERT-powered intelligent text segmentation
 - **Vector Processing**: BGE embeddings optimized for legal domain
+- **Persistent Cloud Storage**: Qdrant Cloud integration with 1GB free tier
 - **Batch Processing**: Robust handling of large document collections
 - **Resource Optimization**: Memory-efficient processing with configurable limits
+- **Cloud Migration Tools**: Easy migration from local to cloud storage
 
 ## 🏗️ Architecture
 
 ```
-CourtListener API → Data Ingestion → Semantic Chunking → Vector Processing → Qdrant Storage
+CourtListener API → Data Ingestion → Semantic Chunking → Vector Processing → Qdrant Cloud (Persistent)
 ```
 
 ### Pipeline Steps:
 1. **Data Ingestion**: Fetch legal documents from CourtListener API
 2. **Semantic Chunking**: Break documents into coherent chunks using Legal BERT
 3. **Vector Processing**: Create semantic embeddings using BGE models
-4. **Storage**: Store vectors in Qdrant for efficient search
+4. **Persistent Storage**: Store vectors in Qdrant Cloud for permanent access
+
+### ☁️ Cloud-First Design:
+- **No Repeated API Calls**: Data persisted in Qdrant Cloud eliminates need to repeatedly fetch from CourtListener
+- **Always Available**: Access your legal document database from anywhere
+- **Free Tier**: 1GB permanent storage with no credit card required
+- **Auto-Scaling**: Easy upgrade path when you need more capacity
 
 ## 📁 File Structure
 
@@ -30,17 +38,19 @@ CourtListener API → Data Ingestion → Semantic Chunking → Vector Processing
 lawlm/
 ├── README.md                   # Main documentation
 ├── requirements.txt            # Python dependencies
+├── .env.template              # Environment variable template
 ├── pipeline_runner.py          # Main pipeline orchestrator
-├── config.py                  # Configuration management
+├── config.py                  # Configuration management with cloud support
+├── migrate_to_cloud.py        # Cloud migration utility
 ├── monitor.py                 # System monitoring and health checks
 ├── batch_utils.py             # Batch processing utilities
 ├── data_ingestion.py          # CourtListener API integration
 ├── processing/
 │   ├── __init__.py            # Processing module exports
 │   ├── smart_chunking.py      # Semantic chunking with Legal BERT
-│   └── vector_processor.py    # Vector processing with BGE embeddings
+│   └── vector_processor.py    # Vector processing with cloud support
 ├── data/                      # Working directory for pipeline files
-├── qdrant_storage/           # Qdrant vector database storage
+├── qdrant_storage/           # Local Qdrant storage (for migration)
 ```
 
 ## 🚀 Quick Start
@@ -48,8 +58,8 @@ lawlm/
 ### Prerequisites
 
 1. **Python 3.8+** with pip
-2. **Qdrant server** running locally or remotely
-3. **CourtListener API key** (set as environment variable)
+2. **CourtListener API key** ([get one here](https://www.courtlistener.com/api/))
+3. **Qdrant Cloud account** ([sign up here](https://cloud.qdrant.io/)) - **Free tier with 1GB storage**
 
 ### Installation
 
@@ -62,14 +72,41 @@ cd lawlm
 pip install -r requirements.txt
 
 # Set up environment variables
-cp .env.example .env
-# Edit .env with your CASELAW_API_KEY and QDRANT_URL
+cp .env.template .env
+# Edit .env with your API keys (see Cloud Setup section below)
 ```
+
+### ☁️ Cloud Setup (Recommended)
+
+1. **Get CourtListener API Key**:
+   - Sign up at [https://www.courtlistener.com/api/](https://www.courtlistener.com/api/)
+   - Get your free API key
+
+2. **Set up Qdrant Cloud**:
+   - Sign up at [https://cloud.qdrant.io/](https://cloud.qdrant.io/)
+   - Create a free cluster (1GB storage, no credit card needed)
+   - Note your cluster URL and API key
+
+3. **Configure Environment**:
+   ```bash
+   # Edit .env file with your credentials
+   CASELAW_API_KEY=your_courtlistener_api_key_here
+   QDRANT_URL=https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333
+   QDRANT_API_KEY=your_qdrant_api_key_here
+   QDRANT_CLUSTER_NAME=your_cluster_name
+   ```
+
+4. **Verify Setup**:
+   ```bash
+   # Test configuration
+   python config.py --validate
+   ```
 
 ### Basic Usage
 
 ```bash
 # Run complete pipeline with defaults (5 Supreme Court cases)
+# Data will be stored permanently in Qdrant Cloud with automatic duplicate detection
 python pipeline_runner.py --court scotus --num-dockets 5
 
 # Process with batch processing (recommended for larger datasets)
@@ -79,14 +116,61 @@ python pipeline_runner.py --court scotus --num-dockets 20 --batch-size 5
 python pipeline_runner.py --status
 ```
 
+### 🔄 Handling Existing Data (Duplicate Detection)
+
+The pipeline automatically detects and skips duplicate documents to prevent waste of storage:
+
+```bash
+# Default behavior - skip duplicates by document ID
+python pipeline_runner.py --court scotus --num-dockets 10
+
+# Skip duplicates by docket number (broader deduplication)
+python pipeline_runner.py --court scotus --num-dockets 10 --duplicate-check-mode docket_number
+
+# Skip duplicates by both document ID AND docket number
+python pipeline_runner.py --court scotus --num-dockets 10 --duplicate-check-mode both
+
+# Disable duplicate detection (may create duplicates)
+python pipeline_runner.py --court scotus --num-dockets 10 --no-skip-duplicates
+
+# Overwrite existing collection (WARNING: destroys existing data)
+python pipeline_runner.py --court scotus --num-dockets 10 --overwrite-collection
+```
+
+### 🔄 Migrating from Local to Cloud
+
+If you have existing local Qdrant data, use the migration utility:
+
+```bash
+# List your local collections
+python migrate_to_cloud.py --list-source
+
+# List cloud collections (to verify connection)
+python migrate_to_cloud.py --list-target
+
+# Migrate a single collection
+python migrate_to_cloud.py --migrate caselaw-cases
+
+# Migrate all collections
+python migrate_to_cloud.py --migrate-all
+
+# Export collection for backup
+python migrate_to_cloud.py --export caselaw-cases --output backup.json
+```
+
 ## 📊 Configuration
 
 The pipeline supports comprehensive configuration through:
 
 ### 1. Environment Variables
 ```bash
+# Required
 CASELAW_API_KEY=your_api_key_here
-QDRANT_URL=http://localhost:6333
+QDRANT_URL=https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333
+QDRANT_API_KEY=your_qdrant_api_key_here
+
+# Optional
+QDRANT_CLUSTER_NAME=your_cluster_name
 ```
 
 ### 2. Configuration Files
@@ -245,11 +329,27 @@ python pipeline_runner.py --batch-size 2
 
 #### Qdrant Connection Issues
 ```bash
-# Check Qdrant server status
-curl http://localhost:6333/health
-
-# Validate configuration
+# Check Qdrant Cloud connection
 python config.py --validate
+
+# Test cloud connection
+curl -H "api-key: your_api_key" https://your-cluster.cloud.qdrant.io:6333/health
+
+# Check local server status (if using local)
+curl http://localhost:6333/health
+```
+
+#### Cloud Free Tier Limits
+```bash
+# The pipeline automatically monitors your free tier usage
+# You'll see warnings like:
+# ☁️ Cloud storage used: 256.3MB / 1024MB (free tier)
+# 💾 Remaining free tier storage: 767.7MB
+
+# If you approach the limit, consider:
+# 1. Processing fewer documents at once
+# 2. Using smaller chunk sizes
+# 3. Upgrading to a paid plan
 ```
 
 #### Interrupted Processing
@@ -304,6 +404,35 @@ For issues and questions:
 2. Review configuration with `python config.py --validate`
 3. Check system health with `python monitor.py --health`
 4. Create an issue in the repository
+
+---
+
+## ☁️ Cloud Benefits
+
+### Why Use Qdrant Cloud?
+
+1. **Persistent Storage**: Your legal document database persists permanently - no more repeated API calls to CourtListener
+2. **Always Available**: Access your data from anywhere, anytime
+3. **No Setup Required**: No local Qdrant server maintenance
+4. **Free Tier**: 1GB storage permanently free (approximately 500K document chunks)
+5. **Automatic Backups**: Built-in reliability and data protection
+6. **Easy Scaling**: Upgrade to paid tiers when you need more capacity
+
+### Free Tier Capacity
+
+The 1GB free tier can store approximately:
+- **500,000 document chunks** with metadata
+- **50-100 complete legal cases** (depending on case length)
+- **Vector embeddings** for comprehensive search
+
+### Usage Monitoring
+
+The pipeline automatically tracks your cloud usage:
+```
+☁️ Cloud Qdrant detected - checking free tier limits
+☁️ Cloud storage used: 256.3MB / 1024MB (free tier)
+💾 Remaining free tier storage: 767.7MB
+```
 
 ---
 
