@@ -255,13 +255,20 @@ class LegalDocumentPipeline:
         
         return result_path
     
-    def create_vector_index(self, chunks_file: str, collection_name: Optional[str] = None) -> str:
+    def create_vector_index(self, chunks_file: str, 
+                           collection_name: Optional[str] = None,
+                           skip_duplicates: bool = True,
+                           duplicate_check_mode: str = "document_id",
+                           overwrite_collection: bool = False) -> str:
         """
-        Step 3: Create vector search index from chunks.
+        Step 3: Create vector search index from chunks with duplicate detection.
         
         Args:
             chunks_file: Path to chunks JSON file
             collection_name: Custom collection name
+            skip_duplicates: Whether to skip duplicate documents (default: True)
+            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
+            overwrite_collection: Whether to delete and recreate collection (default: False)
             
         Returns:
             Name of created collection
@@ -269,12 +276,25 @@ class LegalDocumentPipeline:
         logger.info(f"🔍 Starting vector index creation")
         logger.info(f"📂 Input: {chunks_file}")
         
+        # Log duplicate handling settings
+        if overwrite_collection:
+            logger.info(f"🗑️ Overwrite mode: will delete and recreate collection")
+        elif skip_duplicates:
+            logger.info(f"🔄 Duplicate detection enabled: checking by {duplicate_check_mode}")
+        else:
+            logger.info(f"⚠️ Duplicate detection disabled: may create duplicates")
+        
         start_time = time.time()
         
         if collection_name:
             self.vector_processor.collection_name = collection_name
         
-        collection = self.vector_processor.process_documents_from_file(chunks_file)
+        collection = self.vector_processor.process_documents_from_file(
+            chunks_file,
+            skip_duplicates=skip_duplicates,
+            duplicate_check_mode=duplicate_check_mode,
+            overwrite_collection=overwrite_collection
+        )
         
         duration = time.time() - start_time
         logger.info(f"✅ Vector index creation completed in {duration:.1f}s")
@@ -322,9 +342,12 @@ class LegalDocumentPipeline:
                          vector_collection: Optional[str] = None,
                          hybrid_collection: Optional[str] = None,
                          job_id: Optional[str] = None,
-                         resume: bool = False) -> Dict[str, Any]:
+                         resume: bool = False,
+                         skip_duplicates: bool = True,
+                         duplicate_check_mode: str = "document_id",
+                         overwrite_collection: bool = False) -> Dict[str, Any]:
         """
-        Run the complete pipeline from ingestion to search-ready indices.
+        Run the complete pipeline from ingestion to search-ready indices with persistent storage.
         
         Args:
             court: Court identifier
@@ -336,6 +359,9 @@ class LegalDocumentPipeline:
             hybrid_collection: Custom hybrid collection name
             job_id: Optional job identifier for batch processing
             resume: Whether to resume from previous incomplete run
+            skip_duplicates: Whether to skip duplicate documents in persistent storage (default: True)
+            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
+            overwrite_collection: Whether to delete and recreate collection (default: False)
             
         Returns:
             Dictionary with paths and collection names
@@ -384,7 +410,13 @@ class LegalDocumentPipeline:
                 logger.info(f"🔍 STEP 3A: Vector Index Creation")
                 logger.info(f"="*60)
                 
-                vector_coll = self.create_vector_index(chunks_path, vector_collection)
+                vector_coll = self.create_vector_index(
+                    chunks_path, 
+                    vector_collection,
+                    skip_duplicates=skip_duplicates,
+                    duplicate_check_mode=duplicate_check_mode,
+                    overwrite_collection=overwrite_collection
+                )
                 collections['vector'] = vector_coll
                 results['vector_collection'] = vector_coll
             
@@ -489,13 +521,22 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run full pipeline for Supreme Court cases
+  # Run full pipeline for Supreme Court cases (with duplicate detection)
   python pipeline_runner.py --court scotus --num-dockets 10
+
+  # Run pipeline without duplicate detection (may create duplicates)
+  python pipeline_runner.py --court scotus --num-dockets 5 --no-skip-duplicates
+
+  # Overwrite existing collection (destroys previous data)
+  python pipeline_runner.py --court scotus --num-dockets 5 --overwrite-collection
+
+  # Check duplicates by docket number instead of document ID
+  python pipeline_runner.py --court scotus --num-dockets 5 --duplicate-check-mode docket_number
 
   # Run only ingestion and chunking
   python pipeline_runner.py --court scotus --no-vector --no-hybrid
 
-  # Custom configuration
+  # Custom configuration with persistent storage
   python pipeline_runner.py --court scotus --chunk-size 512 --embedding-model all-MiniLM-L6-v2
 
   # Check pipeline status
@@ -543,6 +584,15 @@ Examples:
     parser.add_argument('--hybrid-collection',
                        help='Custom hybrid collection name')
     
+    # Duplicate handling options
+    parser.add_argument('--no-skip-duplicates', action='store_true',
+                       help='Disable duplicate detection (may create duplicates in persistent storage)')
+    parser.add_argument('--duplicate-check-mode', default='document_id',
+                       choices=['document_id', 'docket_number', 'both'],
+                       help='How to check for duplicates (default: document_id)')
+    parser.add_argument('--overwrite-collection', action='store_true',
+                       help='Delete and recreate collection (WARNING: destroys existing data)')
+    
     # Infrastructure
     parser.add_argument('--qdrant-url', default='http://localhost:6333',
                        help='Qdrant server URL (default: http://localhost:6333)')
@@ -583,7 +633,10 @@ Examples:
             vector_collection=args.vector_collection,
             hybrid_collection=args.hybrid_collection,
             job_id=args.job_id,
-            resume=args.resume
+            resume=args.resume,
+            skip_duplicates=not args.no_skip_duplicates,
+            duplicate_check_mode=args.duplicate_check_mode,
+            overwrite_collection=args.overwrite_collection
         )
         
         print(f"\n🎉 Pipeline completed successfully!")

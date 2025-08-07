@@ -94,14 +94,34 @@ class EnhancedVectorProcessor:
         self.client = self._get_qdrant_client()
     
     def _get_qdrant_client(self) -> QdrantClient:
-        """Initialize and return Qdrant client."""
+        """Initialize and return Qdrant client with cloud support."""
         try:
-            client = QdrantClient(self.qdrant_url)
+            # Check if we have API key for cloud authentication
+            api_key = os.getenv("QDRANT_API_KEY")
+            
+            if api_key:
+                # Use API key for cloud authentication
+                client = QdrantClient(
+                    url=self.qdrant_url,
+                    api_key=api_key,
+                    timeout=30
+                )
+                logger.info(f"Connected to Qdrant Cloud at {self.qdrant_url}")
+            else:
+                # Local instance without API key
+                client = QdrantClient(self.qdrant_url)
+                logger.info(f"Connected to local Qdrant at {self.qdrant_url}")
+            
+            # Test connection
             client.get_collections()
-            logger.info(f"Connected to Qdrant at {self.qdrant_url}")
             return client
+            
         except Exception as e:
             logger.error(f"Error connecting to Qdrant at {self.qdrant_url}: {e}")
+            if "Unauthorized" in str(e) or "401" in str(e):
+                logger.error("Authentication failed. Check your QDRANT_API_KEY environment variable.")
+            elif "cloud.qdrant.io" in self.qdrant_url and not os.getenv("QDRANT_API_KEY"):
+                logger.error("Cloud URL detected but no QDRANT_API_KEY provided. Set your API key.")
             raise
     
     def _create_enhanced_text(self, chunk: Dict[str, Any]) -> str:
@@ -140,20 +160,204 @@ class EnhancedVectorProcessor:
         
         return enhanced_text
     
-    def process_chunks(self, chunks: List[Dict[str, Any]], batch_size: int = 50, checkpoint_interval: int = 100) -> str:
+    def get_existing_document_ids(self) -> set:
+        """Get set of existing document IDs in the collection."""
+        try:
+            if not self.client.collection_exists(collection_name=self.collection_name):
+                return set()
+            
+            existing_ids = set()
+            offset = None
+            
+            while True:
+                # Scroll through existing points to get document IDs
+                points, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False  # Only need payload
+                )
+                
+                if not points:
+                    break
+                
+                for point in points:
+                    doc_id = point.payload.get('document_id')
+                    if doc_id:
+                        existing_ids.add(doc_id)
+                
+                offset = next_offset
+                if next_offset is None:
+                    break
+            
+            return existing_ids
+            
+        except Exception as e:
+            logger.warning(f"Could not get existing document IDs: {e}")
+            return set()
+    
+    def get_existing_docket_numbers(self) -> set:
+        """Get set of existing docket numbers in the collection."""
+        try:
+            if not self.client.collection_exists(collection_name=self.collection_name):
+                return set()
+            
+            existing_dockets = set()
+            offset = None
+            
+            while True:
+                points, next_offset = self.client.scroll(
+                    collection_name=self.collection_name,
+                    limit=1000,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                
+                if not points:
+                    break
+                
+                for point in points:
+                    docket = point.payload.get('docket_number')
+                    if docket:
+                        existing_dockets.add(docket)
+                
+                offset = next_offset
+                if next_offset is None:
+                    break
+            
+            return existing_dockets
+            
+        except Exception as e:
+            logger.warning(f"Could not get existing docket numbers: {e}")
+            return set()
+    
+    def filter_duplicate_chunks(self, chunks: List[Dict[str, Any]], 
+                               check_mode: str = "document_id") -> tuple[List[Dict[str, Any]], int, int]:
         """
-        Process semantic chunks for enhanced vector search.
+        Filter out chunks that already exist in the collection.
+        
+        Args:
+            chunks: List of chunks to process
+            check_mode: "document_id", "docket_number", or "both"
+            
+        Returns:
+            (filtered_chunks, duplicates_found, total_chunks)
+        """
+        total_chunks = len(chunks)
+        
+        if not self.client.collection_exists(collection_name=self.collection_name):
+            logger.info(f"📋 Collection '{self.collection_name}' doesn't exist - all chunks are new")
+            return chunks, 0, total_chunks
+        
+        logger.info(f"🔍 Checking for duplicates in existing collection...")
+        
+        if check_mode == "document_id":
+            existing_ids = self.get_existing_document_ids()
+            filtered_chunks = [chunk for chunk in chunks 
+                             if chunk.get('document_id') not in existing_ids]
+            
+        elif check_mode == "docket_number":
+            existing_dockets = self.get_existing_docket_numbers()
+            filtered_chunks = [chunk for chunk in chunks 
+                             if chunk.get('docket_number') not in existing_dockets]
+            
+        elif check_mode == "both":
+            existing_ids = self.get_existing_document_ids()
+            existing_dockets = self.get_existing_docket_numbers()
+            filtered_chunks = [chunk for chunk in chunks 
+                             if (chunk.get('document_id') not in existing_ids and
+                                 chunk.get('docket_number') not in existing_dockets)]
+        else:
+            raise ValueError(f"Invalid check_mode: {check_mode}")
+        
+        duplicates_found = total_chunks - len(filtered_chunks)
+        
+        logger.info(f"📊 Duplicate analysis:")
+        logger.info(f"   Total chunks: {total_chunks}")
+        logger.info(f"   New chunks: {len(filtered_chunks)}")
+        logger.info(f"   Duplicates found: {duplicates_found}")
+        
+        return filtered_chunks, duplicates_found, total_chunks
+    
+    def get_collection_size_mb(self) -> float:
+        """Get approximate size of collection in MB."""
+        try:
+            collection_info = self.client.get_collection(self.collection_name)
+            # Rough estimate: each vector (384 dimensions) + metadata ≈ 2-3KB
+            estimated_size_mb = collection_info.points_count * 0.002  # 2KB per point
+            return estimated_size_mb
+        except Exception as e:
+            logger.warning(f"Could not get collection size: {e}")
+            return 0.0
+    
+    def check_free_tier_limits(self, new_points_count: int) -> bool:
+        """Check if adding new points would exceed free tier limits."""
+        try:
+            # Get current collection size
+            current_size_mb = self.get_collection_size_mb()
+            
+            # Estimate size of new points (roughly 2KB per point)
+            new_size_mb = new_points_count * 0.002
+            total_size_mb = current_size_mb + new_size_mb
+            
+            free_tier_limit = 1024.0  # 1GB
+            
+            if total_size_mb > free_tier_limit:
+                logger.warning(f"⚠️ Adding {new_points_count} points would exceed free tier limit:")
+                logger.warning(f"   Current size: {current_size_mb:.1f}MB")
+                logger.warning(f"   New points size: {new_size_mb:.1f}MB")
+                logger.warning(f"   Total would be: {total_size_mb:.1f}MB")
+                logger.warning(f"   Free tier limit: {free_tier_limit}MB")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Could not check free tier limits: {e}")
+            return True  # Allow processing if we can't check
+    
+    def process_chunks(self, chunks: List[Dict[str, Any]], 
+                      batch_size: int = 50, 
+                      checkpoint_interval: int = 100,
+                      skip_duplicates: bool = True,
+                      duplicate_check_mode: str = "document_id",
+                      overwrite_collection: bool = False) -> str:
+        """
+        Process semantic chunks for enhanced vector search with duplicate detection.
         
         Args:
             chunks: List of semantic chunk dictionaries from smart_chunking
             batch_size: Number of chunks to process in each batch (default: 50)
             checkpoint_interval: Interval for progress logging and cleanup (default: 100)
+            skip_duplicates: Whether to skip duplicate chunks (default: True)
+            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
+            overwrite_collection: Whether to delete and recreate collection (default: False)
             
         Returns:
-            str: Name of the created Qdrant collection
+            str: Name of the created/updated Qdrant collection
         """
         logger.info(f"🔍 Processing {len(chunks)} semantic chunks for vector search")
         logger.info(f"Using model: {self.model_name}")
+        
+        # Filter duplicates if requested
+        original_chunk_count = len(chunks)
+        duplicates_found = 0
+        
+        if skip_duplicates and not overwrite_collection:
+            chunks, duplicates_found, _ = self.filter_duplicate_chunks(chunks, duplicate_check_mode)
+            if len(chunks) == 0:
+                logger.info("✅ All chunks already exist in collection - nothing to process!")
+                return self.collection_name
+        
+        # Check free tier limits if using cloud (after filtering duplicates)
+        is_cloud = "cloud.qdrant.io" in self.qdrant_url or os.getenv("QDRANT_API_KEY")
+        if is_cloud:
+            logger.info("☁️ Cloud Qdrant detected - checking free tier limits")
+            if not self.check_free_tier_limits(len(chunks)):
+                logger.error("❌ Processing would exceed free tier limits")
+                raise RuntimeError("Processing would exceed Qdrant free tier 1GB limit")
         
         # Log initial memory usage
         initial_memory = get_memory_usage()
@@ -161,20 +365,26 @@ class EnhancedVectorProcessor:
         if torch.cuda.is_available():
             logger.info(f"🖥️ GPU memory: {initial_memory.get('gpu_allocated_mb', 0):.1f}MB allocated")
         
-        # Delete existing collection if it exists
-        if self.client.collection_exists(collection_name=self.collection_name):
+        # Handle collection creation/deletion
+        collection_existed = self.client.collection_exists(collection_name=self.collection_name)
+        
+        if overwrite_collection and collection_existed:
             self.client.delete_collection(collection_name=self.collection_name)
-            logger.info(f"Deleted existing collection '{self.collection_name}'")
+            logger.info(f"🗑️ Deleted existing collection '{self.collection_name}' (overwrite mode)")
+            collection_existed = False
 
-        # Create new collection with enhanced metadata support
-        self.client.create_collection(
-            collection_name=self.collection_name,
-            vectors_config=models.VectorParams(
-                size=self.vector_size, 
-                distance=models.Distance.COSINE
+        # Create collection if it doesn't exist
+        if not collection_existed:
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                vectors_config=models.VectorParams(
+                    size=self.vector_size, 
+                    distance=models.Distance.COSINE
+                )
             )
-        )
-        logger.info(f"Created collection '{self.collection_name}' with vector size {self.vector_size}")
+            logger.info(f"📁 Created collection '{self.collection_name}' with vector size {self.vector_size}")
+        else:
+            logger.info(f"📁 Using existing collection '{self.collection_name}'")
 
         # Process chunks and create embeddings
         points = []
@@ -282,9 +492,20 @@ class EnhancedVectorProcessor:
             torch.cuda.empty_cache()
 
         logger.info(f"✅ Vector processing completed!")
-        logger.info(f"📦 Successfully processed: {processed_count} chunks")
-        logger.info(f"❌ Failed to process: {error_count} chunks")
-        logger.info(f"🏪 Created Qdrant collection: {self.collection_name}")
+        logger.info(f"📊 Processing summary:")
+        logger.info(f"   Original chunks: {original_chunk_count}")
+        if duplicates_found > 0:
+            logger.info(f"   Duplicates skipped: {duplicates_found}")
+        logger.info(f"   New chunks processed: {processed_count}")
+        logger.info(f"   Failed to process: {error_count}")
+        logger.info(f"🏪 Updated Qdrant collection: {self.collection_name}")
+        
+        # Log cloud usage information
+        if is_cloud:
+            current_size_mb = self.get_collection_size_mb()
+            logger.info(f"☁️ Cloud storage used: {current_size_mb:.1f}MB / 1024MB (free tier)")
+            remaining_mb = 1024.0 - current_size_mb
+            logger.info(f"💾 Remaining free tier storage: {remaining_mb:.1f}MB")
         
         return self.collection_name
     
@@ -302,14 +523,22 @@ class EnhancedVectorProcessor:
         enhanced_query = self.query_prefix + query if self.query_prefix else query
         return self.embedder.encode(enhanced_query).tolist()
     
-    def process_documents_from_file(self, chunks_file: str, batch_size: int = 50, checkpoint_interval: int = 100) -> str:
+    def process_documents_from_file(self, chunks_file: str, 
+                                   batch_size: int = 50, 
+                                   checkpoint_interval: int = 100,
+                                   skip_duplicates: bool = True,
+                                   duplicate_check_mode: str = "document_id",
+                                   overwrite_collection: bool = False) -> str:
         """
-        Process chunks from JSON file.
+        Process chunks from JSON file with duplicate detection.
         
         Args:
             chunks_file: Path to JSON file with semantic chunks
             batch_size: Number of chunks to process in each batch (default: 50)
             checkpoint_interval: Interval for progress logging and cleanup (default: 100)
+            skip_duplicates: Whether to skip duplicate chunks (default: True)
+            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
+            overwrite_collection: Whether to delete and recreate collection (default: False)
             
         Returns:
             Collection name
@@ -320,7 +549,14 @@ class EnhancedVectorProcessor:
             chunks = json.load(f)
         
         logger.info(f"📊 Loaded {len(chunks)} chunks from file")
-        return self.process_chunks(chunks, batch_size=batch_size, checkpoint_interval=checkpoint_interval)
+        return self.process_chunks(
+            chunks, 
+            batch_size=batch_size, 
+            checkpoint_interval=checkpoint_interval,
+            skip_duplicates=skip_duplicates,
+            duplicate_check_mode=duplicate_check_mode,
+            overwrite_collection=overwrite_collection
+        )
     
     def get_search_config(self) -> Dict[str, Any]:
         """
