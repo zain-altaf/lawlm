@@ -71,7 +71,8 @@ class LegalDocumentPipeline:
         if embedding_model is not None:
             self.config.vector_processing.embedding_model = embedding_model
         if chunking_model is not None:
-            self.config.semantic_chunking.model_name = chunking_model
+            # Note: chunking_model is now ignored as we use RecursiveCharacterTextSplitter
+            pass
         if chunk_size is not None:
             self.config.semantic_chunking.target_chunk_size = chunk_size
         if min_chunk_size is not None:
@@ -90,23 +91,20 @@ class LegalDocumentPipeline:
         logger.info(f"🏛️ Legal Document Pipeline initialized")
         logger.info(f"📂 Working directory: {self.working_dir}")
         logger.info(f"🤖 Embedding model: {self.config.vector_processing.embedding_model}")
-        logger.info(f"🧠 Chunking model: {self.config.semantic_chunking.model_name}")
+        logger.info(f"📝 Text splitter: RecursiveCharacterTextSplitter")
         logger.info(f"🔧 Using configuration with {len(self.config.validate())} validation issues")
     
     @property
-    def chunker(self) -> SemanticChunker:
-        """Lazy load the semantic chunker."""
+    def chunker(self) -> SemanticChunker:  # Keep the type for backward compatibility
+        """Lazy load the text splitter (backward compatible as SemanticChunker)."""
         if self._chunker is None:
             config = self.config.semantic_chunking
-            logger.info(f"🧠 Loading semantic chunker: {config.model_name}")
-            self._chunker = SemanticChunker(
-                model_name=config.model_name,
-                target_chunk_size=config.target_chunk_size,
-                overlap_size=config.overlap_size,
-                min_chunk_size=config.min_chunk_size,
-                max_chunk_size=config.max_chunk_size,
-                clustering_threshold=config.clustering_threshold,
-                min_cluster_size=config.min_cluster_size,
+            logger.info(f"📝 Loading RecursiveCharacterTextSplitter")
+            # Use RecursiveCharacterTextSplitter with character-based sizing
+            self._chunker = SemanticChunker(  # This is now an alias for RecursiveCharacterTextSplitter
+                chunk_size=config.target_chunk_size * 4,  # Convert from token estimate to characters (~4 chars per token)
+                chunk_overlap=config.overlap_size * 4,     # Convert overlap to characters
+                min_chunk_size=config.min_chunk_size * 4,  # Convert min size to characters
                 quality_threshold=config.quality_threshold
             )
         return self._chunker
@@ -394,9 +392,9 @@ class LegalDocumentPipeline:
             )
             results['raw_documents'] = raw_docs_path
             
-            # Step 2: Create semantic chunks
+            # Step 2: Create chunks with recursive character text splitter
             logger.info(f"\n" + "="*60)
-            logger.info(f"🔄 STEP 2: Semantic Chunking")
+            logger.info(f"🔄 STEP 2: Recursive Character Text Splitting")
             logger.info(f"="*60)
             
             chunks_path = self.chunk_documents(raw_docs_path)
@@ -454,8 +452,8 @@ class LegalDocumentPipeline:
                     'num_dockets': num_dockets,
                     'batch_size': batch_size,
                     'embedding_model': self.config.vector_processing.embedding_model,
-                    'chunking_model': self.config.semantic_chunking.model_name,
-                    'chunk_size': self.config.semantic_chunking.target_chunk_size,
+                    'splitter_type': 'RecursiveCharacterTextSplitter',
+                    'chunk_size_chars': self.config.semantic_chunking.target_chunk_size * 4,
                     'qdrant_url': self.config.qdrant.url
                 },
                 'results': results
@@ -481,8 +479,8 @@ class LegalDocumentPipeline:
             'collections': [],
             'configuration': {
                 'embedding_model': self.config.vector_processing.embedding_model,
-                'chunking_model': self.config.semantic_chunking.model_name,
-                'chunk_size': self.config.semantic_chunking.target_chunk_size,
+                'splitter_type': 'RecursiveCharacterTextSplitter',
+                'chunk_size_chars': self.config.semantic_chunking.target_chunk_size * 4,
                 'qdrant_url': self.config.qdrant.url
             }
         }

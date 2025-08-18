@@ -49,6 +49,10 @@ lawlm/
 │   ├── __init__.py            # Processing module exports
 │   ├── smart_chunking.py      # Semantic chunking with Legal BERT
 │   └── vector_processor.py    # Vector processing with cloud support
+├── web-interface/             # Next.js search interface
+│   ├── src/                   # Source code
+│   ├── package.json           # Web dependencies
+│   └── README.md              # Web interface documentation
 ├── data/                      # Working directory for pipeline files
 ├── qdrant_storage/           # Local Qdrant storage (for migration)
 ```
@@ -433,6 +437,45 @@ The pipeline automatically tracks your cloud usage:
 ☁️ Cloud storage used: 256.3MB / 1024MB (free tier)
 💾 Remaining free tier storage: 767.7MB
 ```
+
+## 🌐 Web Interface
+
+### Simple Search Interface
+
+A clean Next.js web application provides an intuitive interface for querying your legal database:
+
+```bash
+# Navigate to web interface
+cd web-interface
+
+# Install dependencies
+npm install
+
+# Configure environment (copy your Qdrant and OpenAI credentials)
+cp .env.local.template .env.local
+
+# Start development server
+npm run dev
+```
+
+Visit [http://localhost:3000](http://localhost:3000) to use the search interface.
+
+### Features
+
+- **AI-Powered Search**: Enter legal questions in natural language
+- **Similarity Matching**: Finds most relevant case law using vector search
+- **Smart Citations**: Shows case names, courts, dates, and docket numbers
+- **Confidence Scoring**: Indicates reliability of search results
+- **Professional UI**: Clean interface designed for legal professionals
+
+### How It Works
+
+1. **User Query**: "What are the requirements for due process?"
+2. **Vector Search**: Finds similar legal documents in your Qdrant database
+3. **AI Analysis**: OpenAI analyzes top 3 matches and generates comprehensive answer
+4. **Citations**: Displays supporting case law with proper legal citations
+
+See `web-interface/README.md` for detailed setup and usage instructions.
 
 ---
 

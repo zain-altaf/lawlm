@@ -1,8 +1,8 @@
 """
-Smart Semantic Chunking for Legal Documents using Legal BERT.
+Recursive Character Text Splitter for Legal Documents.
 
-This module provides intelligent chunking of legal documents that groups
-semantically similar content together, optimized for legal domain understanding.
+This module provides chunking of legal documents using recursive character splitting
+with configurable overlap, optimized for legal text processing.
 """
 
 import json
@@ -11,241 +11,159 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Tuple, Optional
 import re
-import numpy as np
-from transformers import AutoTokenizer, AutoModel
-import torch
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.cluster import AgglomerativeClustering
 import logging
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class SemanticChunker:
+class RecursiveCharacterTextSplitter:
     """
-    Semantic chunker that uses legal BERT to create logically coherent chunks
-    from legal documents, grouping semantically similar content together.
+    Recursive character text splitter that creates chunks with overlap
+    optimized for legal documents.
     """
     
     def __init__(self, 
-                 model_name: str = "nlpaueb/legal-bert-base-uncased",
-                 target_chunk_size: int = 384,
-                 overlap_size: int = 75,
+                 chunk_size: int = 1500,
+                 chunk_overlap: int = 200,
                  min_chunk_size: int = 100,
-                 max_chunk_size: int = 512,
-                 clustering_threshold: float = 0.25,
-                 min_cluster_size: int = 2,
+                 separators: Optional[List[str]] = None,
                  quality_threshold: float = 0.3):
         """
-        Initialize the semantic chunker with legal BERT.
+        Initialize the recursive character text splitter.
         
         Args:
-            model_name: Legal BERT model for semantic understanding
-            target_chunk_size: Target size for chunks in tokens
-            overlap_size: Number of tokens to overlap between chunks
+            chunk_size: Maximum size for chunks in characters
+            chunk_overlap: Number of characters to overlap between chunks
             min_chunk_size: Minimum chunk size to avoid tiny fragments
-            max_chunk_size: Maximum chunk size to fit embedding models
+            separators: List of separators to use for splitting (legal-optimized if None)
+            quality_threshold: Minimum quality score for chunks
         """
-        self.model_name = model_name
-        self.target_chunk_size = target_chunk_size
-        self.overlap_size = overlap_size
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
         self.min_chunk_size = min_chunk_size
-        self.max_chunk_size = max_chunk_size
-        self.clustering_threshold = clustering_threshold
-        self.min_cluster_size = min_cluster_size
         self.quality_threshold = quality_threshold
         
-        # Initialize legal BERT model and tokenizer
-        logger.info(f"Loading legal BERT model: {model_name}")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
-        self.model.eval()
+        # Legal document separators in priority order
+        if separators is None:
+            self.separators = [
+                "\n\n\n",  # Triple line breaks (major sections)
+                "\n\n",    # Double line breaks (paragraphs)
+                "\n",      # Single line breaks
+                ". ",      # Sentence endings
+                "; ",      # Clause separators
+                ", ",      # Phrase separators
+                " "        # Word separators
+            ]
+        else:
+            self.separators = separators
         
-        # Set device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model.to(self.device)
-        logger.info(f"Using device: {self.device}")
+        logger.info(f"Initialized RecursiveCharacterTextSplitter")
+        logger.info(f"Chunk size: {chunk_size}, Overlap: {chunk_overlap}")
+        logger.info(f"Separators: {len(self.separators)} configured")
     
-    def _split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences using legal-aware patterns."""
-        # Enhanced sentence splitting for legal documents
-        # Handle citations, legal abbreviations, and court patterns
+    def _split_text_recursively(self, text: str, separators: List[str]) -> List[str]:
+        """Recursively split text using the provided separators."""
+        if not text or len(text.strip()) <= self.chunk_size:
+            return [text] if text.strip() else []
         
-        # Pre-process to protect common legal abbreviations
-        abbreviations = [
-            r'U\.S\.', r'F\.2d', r'F\.3d', r'S\.Ct\.', r'L\.Ed\.', r'P\.2d', r'P\.3d',
-            r'A\.2d', r'A\.3d', r'N\.E\.2d', r'N\.E\.3d', r'S\.E\.2d', r'S\.E\.3d',
-            r'So\.2d', r'So\.3d', r'S\.W\.2d', r'S\.W\.3d', r'N\.W\.2d', r'N\.W\.3d',
-            r'Cal\.App\.', r'N\.Y\.S\.', r'etc\.', r'Inc\.', r'Corp\.', r'Ltd\.',
-            r'v\.', r'vs\.', r'No\.', r'Nos\.', r'J\.', r'C\.J\.', r'e\.g\.', r'i\.e\.',
-            r'cf\.', r'supra', r'infra', r'accord', r'contra'
-        ]
-        
-        protected_text = text
-        placeholders = {}
-        
-        # Protect abbreviations
-        for i, abbrev in enumerate(abbreviations):
-            placeholder = f"__ABBREV_{i}__"
-            matches = re.findall(abbrev, protected_text, re.IGNORECASE)
-            for match in matches:
-                if match not in placeholders:
-                    placeholders[placeholder] = match
-                    protected_text = protected_text.replace(match, placeholder)
-        
-        # Split on sentence boundaries
-        sentence_pattern = r'(?<=[.!?])\s+(?=[A-Z])'
-        sentences = re.split(sentence_pattern, protected_text)
-        
-        # Restore abbreviations
-        restored_sentences = []
-        for sentence in sentences:
-            for placeholder, original in placeholders.items():
-                sentence = sentence.replace(placeholder, original)
-            restored_sentences.append(sentence.strip())
-        
-        # Filter out empty sentences and very short ones
-        return [s for s in restored_sentences if len(s.strip()) > 10]
-    
-    def _get_sentence_embeddings(self, sentences: List[str]) -> np.ndarray:
-        """Get embeddings for sentences using legal BERT."""
-        embeddings = []
-        
-        with torch.no_grad():
-            for sentence in sentences:
-                # Tokenize and get embeddings
-                inputs = self.tokenizer(
-                    sentence,
-                    return_tensors="pt",
-                    max_length=512,
-                    truncation=True,
-                    padding=True
-                )
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        # Try each separator in order
+        for separator in separators:
+            if separator in text:
+                splits = text.split(separator)
                 
-                outputs = self.model(**inputs)
-                # Use mean pooling of last hidden states
-                sentence_embedding = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
-                embeddings.append(sentence_embedding[0])
+                # Reconstruct chunks while preserving separator
+                chunks = []
+                current_chunk = ""
+                
+                for i, split in enumerate(splits):
+                    # Add separator back (except for last split)
+                    if i < len(splits) - 1:
+                        split_with_sep = split + separator
+                    else:
+                        split_with_sep = split
+                    
+                    # Check if adding this split would exceed chunk size
+                    if len(current_chunk + split_with_sep) > self.chunk_size and current_chunk:
+                        chunks.append(current_chunk.strip())
+                        current_chunk = split_with_sep
+                    else:
+                        current_chunk += split_with_sep
+                
+                # Add the last chunk
+                if current_chunk.strip():
+                    chunks.append(current_chunk.strip())
+                
+                # Recursively split chunks that are still too large
+                final_chunks = []
+                for chunk in chunks:
+                    if len(chunk) > self.chunk_size:
+                        # Use remaining separators for recursive splitting
+                        remaining_separators = separators[separators.index(separator) + 1:]
+                        if remaining_separators:
+                            final_chunks.extend(self._split_text_recursively(chunk, remaining_separators))
+                        else:
+                            # Force split if no separators left
+                            final_chunks.extend(self._force_split(chunk))
+                    else:
+                        final_chunks.append(chunk)
+                
+                return final_chunks
         
-        return np.array(embeddings)
+        # If no separators found, force split
+        return self._force_split(text)
     
-    def _cluster_sentences(self, embeddings: np.ndarray, sentences: List[str]) -> List[List[int]]:
-        """Cluster sentences based on semantic similarity."""
-        if len(embeddings) < 2:
-            return [[0]] if len(embeddings) == 1 else []
-        
-        # Calculate similarity matrix
-        similarity_matrix = cosine_similarity(embeddings)
-        
-        # Use agglomerative clustering with tuned threshold for legal documents
-        # Lower threshold creates more cohesive clusters
-        clustering = AgglomerativeClustering(
-            n_clusters=None,
-            distance_threshold=self.clustering_threshold,  # Optimized for legal domain
-            linkage='average',
-            metric='cosine'
-        )
-        
-        cluster_labels = clustering.fit_predict(embeddings)
-        
-        # Group sentence indices by cluster and filter small clusters
-        clusters = {}
-        for idx, label in enumerate(cluster_labels):
-            if label not in clusters:
-                clusters[label] = []
-            clusters[label].append(idx)
-        
-        # Filter out clusters that are too small (may be noise)
-        filtered_clusters = [cluster for cluster in clusters.values() 
-                           if len(cluster) >= self.min_cluster_size]
-        
-        # If we filtered out too many, include single-sentence clusters
-        if len(filtered_clusters) < len(clusters) * 0.5:
-            filtered_clusters = list(clusters.values())
-        
-        logger.info(f"    Created {len(filtered_clusters)} semantic clusters (filtered from {len(clusters)})")
-        return filtered_clusters
-    
-    def _create_chunks(self, sentences: List[str], clusters: List[List[int]]) -> List[Dict[str, Any]]:
-        """Create chunks from clustered sentences with size constraints."""
+    def _force_split(self, text: str) -> List[str]:
+        """Force split text into chunks of specified size."""
         chunks = []
-        
-        for cluster_idx, sentence_indices in enumerate(clusters):
-            # Get sentences for this cluster
-            cluster_sentences = [sentences[i] for i in sentence_indices]
-            cluster_text = " ".join(cluster_sentences)
-            
-            # Check if cluster fits in one chunk
-            tokens = self.tokenizer.encode(cluster_text, add_special_tokens=False)
-            
-            if len(tokens) <= self.target_chunk_size:
-                # Cluster fits in one chunk
-                chunks.append({
-                    'text': cluster_text,
-                    'sentence_indices': sentence_indices,
-                    'semantic_cluster': cluster_idx,
-                    'token_count': len(tokens),
-                    'sentence_count': len(cluster_sentences)
-                })
-            else:
-                # Split large cluster while maintaining semantic coherence
-                sub_chunks = self._split_large_cluster(cluster_sentences, sentence_indices, cluster_idx)
-                chunks.extend(sub_chunks)
-        
+        for i in range(0, len(text), self.chunk_size):
+            chunk = text[i:i + self.chunk_size]
+            if chunk.strip():
+                chunks.append(chunk.strip())
         return chunks
     
-    def _split_large_cluster(self, sentences: List[str], sentence_indices: List[int], cluster_id: int) -> List[Dict[str, Any]]:
-        """Split large semantic clusters into appropriately sized chunks."""
-        chunks = []
-        current_chunk_sentences = []
-        current_chunk_indices = []
-        current_token_count = 0
+    def _create_overlapping_chunks(self, chunks: List[str]) -> List[str]:
+        """Create overlapping chunks from the split text."""
+        if not chunks or self.chunk_overlap == 0:
+            return chunks
         
-        for i, sentence in enumerate(sentences):
-            sentence_tokens = len(self.tokenizer.encode(sentence, add_special_tokens=False))
-            
-            # Check if adding this sentence would exceed target size
-            if current_token_count + sentence_tokens > self.target_chunk_size and current_chunk_sentences:
-                # Create chunk from current sentences
-                chunk_text = " ".join(current_chunk_sentences)
-                chunks.append({
-                    'text': chunk_text,
-                    'sentence_indices': current_chunk_indices.copy(),
-                    'semantic_cluster': cluster_id,
-                    'token_count': current_token_count,
-                    'sentence_count': len(current_chunk_sentences),
-                    'is_split_cluster': True
-                })
-                
-                # Start new chunk with overlap
-                overlap_sentences = current_chunk_sentences[-2:] if len(current_chunk_sentences) >= 2 else []
-                overlap_indices = current_chunk_indices[-2:] if len(current_chunk_indices) >= 2 else []
-                overlap_tokens = sum(len(self.tokenizer.encode(s, add_special_tokens=False)) for s in overlap_sentences)
-                
-                current_chunk_sentences = overlap_sentences + [sentence]
-                current_chunk_indices = overlap_indices + [sentence_indices[i]]
-                current_token_count = overlap_tokens + sentence_tokens
+        overlapped_chunks = []
+        
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                # First chunk - no prefix overlap needed
+                overlapped_chunks.append(chunk)
             else:
-                # Add sentence to current chunk
-                current_chunk_sentences.append(sentence)
-                current_chunk_indices.append(sentence_indices[i])
-                current_token_count += sentence_tokens
+                # Add overlap from previous chunk
+                prev_chunk = chunks[i-1]
+                overlap_text = prev_chunk[-self.chunk_overlap:] if len(prev_chunk) > self.chunk_overlap else prev_chunk
+                
+                # Clean up overlap boundary (try to break at word boundary)
+                if ' ' in overlap_text:
+                    words = overlap_text.split(' ')
+                    if len(words) > 1:
+                        overlap_text = ' '.join(words[1:])  # Remove partial first word
+                
+                overlapped_chunk = overlap_text + " " + chunk
+                overlapped_chunks.append(overlapped_chunk)
         
-        # Add final chunk if it has content
-        if current_chunk_sentences:
-            chunk_text = " ".join(current_chunk_sentences)
-            chunks.append({
-                'text': chunk_text,
-                'sentence_indices': current_chunk_indices,
-                'semantic_cluster': cluster_id,
-                'token_count': current_token_count,
-                'sentence_count': len(current_chunk_sentences),
-                'is_split_cluster': True
-            })
+        return overlapped_chunks
+    
+    def split_text(self, text: str) -> List[str]:
+        """Split text into chunks using recursive character splitting with overlap."""
+        if not text or len(text.strip()) < self.min_chunk_size:
+            return []
         
-        return chunks
+        # First, split text recursively using separators
+        chunks = self._split_text_recursively(text, self.separators)
+        
+        # Filter out chunks that are too small
+        chunks = [chunk for chunk in chunks if len(chunk.strip()) >= self.min_chunk_size]
+        
+        # Create overlapping chunks
+        overlapped_chunks = self._create_overlapping_chunks(chunks)
+        
+        return overlapped_chunks
     
     def _validate_chunk_quality(self, chunk: Dict[str, Any]) -> Dict[str, bool]:
         """
@@ -366,7 +284,7 @@ class SemanticChunker:
     
     def chunk_document(self, document: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Chunk a single document using semantic clustering.
+        Chunk a single document using recursive character splitting.
         
         Args:
             document: Document dictionary with opinion_text and metadata
@@ -381,48 +299,23 @@ class SemanticChunker:
         
         logger.info(f"Chunking document: {document.get('case_name', 'Unknown')} ({document.get('id', 'unknown')})")
         
-        # Step 1: Split into sentences
-        sentences = self._split_into_sentences(opinion_text)
-        if len(sentences) < 2:
-            # Document too short, return as single chunk
-            chunk_metadata = self._calculate_chunk_metadata({'text': opinion_text}, document)
-            return [{
-                'chunk_id': str(uuid.uuid4()),
-                'document_id': document.get('id'),
-                'docket_number': document.get('docket_number'),
-                'case_name': document.get('case_name'),
-                'chunk_index': 0,
-                'text': opinion_text,
-                'token_count': len(self.tokenizer.encode(opinion_text, add_special_tokens=False)),
-                'sentence_count': len(sentences),
-                'semantic_cluster': 0,
-                'is_single_chunk_document': True,
-                **chunk_metadata,
-                'created_at': datetime.now().isoformat()
-            }]
+        # Split text into overlapping chunks
+        chunk_texts = self.split_text(opinion_text)
         
-        # Step 2: Get sentence embeddings
-        logger.info(f"  Processing {len(sentences)} sentences...")
-        embeddings = self._get_sentence_embeddings(sentences)
+        if not chunk_texts:
+            logger.warning(f"No chunks created for document {document.get('id', 'unknown')}")
+            return []
         
-        # Step 3: Cluster sentences semantically
-        clusters = self._cluster_sentences(embeddings, sentences)
-        logger.info(f"  Found {len(clusters)} semantic clusters")
+        logger.info(f"  Created {len(chunk_texts)} chunks with overlap of {self.chunk_overlap} characters")
         
-        # Step 4: Create chunks from clusters
-        raw_chunks = self._create_chunks(sentences, clusters)
-        
-        # Step 5: Post-process chunks and add metadata with quality validation
+        # Post-process chunks and add metadata
         final_chunks = []
         quality_filtered = 0
         
-        for idx, chunk in enumerate(raw_chunks):
-            if chunk['token_count'] < self.min_chunk_size:
-                logger.info(f"  Skipping chunk {idx} - too small ({chunk['token_count']} tokens)")
-                continue
-            
+        for idx, chunk_text in enumerate(chunk_texts):
             # Validate chunk quality
-            quality_validation = self._validate_chunk_quality(chunk)
+            chunk_dict = {'text': chunk_text}
+            quality_validation = self._validate_chunk_quality(chunk_dict)
             
             # Skip low-quality chunks
             if not quality_validation['passes_quality_check']:
@@ -431,7 +324,7 @@ class SemanticChunker:
                 continue
             
             # Calculate legal metadata
-            chunk_metadata = self._calculate_chunk_metadata(chunk, document)
+            chunk_metadata = self._calculate_chunk_metadata(chunk_dict, document)
             
             # Build final chunk object
             final_chunk = {
@@ -446,11 +339,11 @@ class SemanticChunker:
                 
                 # Chunk-specific data
                 'chunk_index': idx,
-                'text': chunk['text'],
-                'token_count': chunk['token_count'],
-                'sentence_count': chunk['sentence_count'],
-                'semantic_cluster': chunk['semantic_cluster'],
-                'is_split_cluster': chunk.get('is_split_cluster', False),
+                'text': chunk_text,
+                'char_count': len(chunk_text),
+                'word_count': len(chunk_text.split()),
+                'chunking_method': 'recursive_character',
+                'chunk_overlap': self.chunk_overlap,
                 
                 # Legal metadata
                 **chunk_metadata,
@@ -460,13 +353,13 @@ class SemanticChunker:
                 
                 # Processing metadata
                 'created_at': datetime.now().isoformat(),
-                'model_used': self.model_name,
+                'splitter_type': 'RecursiveCharacterTextSplitter',
                 'ready_for_embedding': True
             }
             
             final_chunks.append(final_chunk)
         
-        logger.info(f"  Created {len(final_chunks)} semantic chunks")
+        logger.info(f"  Created {len(final_chunks)} valid chunks")
         if quality_filtered > 0:
             logger.info(f"  Filtered out {quality_filtered} low-quality chunks")
         return final_chunks
@@ -486,7 +379,7 @@ class SemanticChunker:
             base_name = os.path.splitext(input_file)[0]
             output_file = f"{base_name}_chunks.json"
         
-        logger.info(f"🔄 Starting semantic chunking pipeline")
+        logger.info(f"🔄 Starting recursive character text splitting pipeline")
         logger.info(f"📂 Input: {input_file}")
         logger.info(f"💾 Output: {output_file}")
         
@@ -536,34 +429,34 @@ class SemanticChunker:
 
 
 def main():
-    """Command line interface for semantic chunking."""
+    """Command line interface for recursive character text splitting."""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Semantic chunking of legal documents')
+    parser = argparse.ArgumentParser(description='Recursive character text splitting of legal documents')
     parser.add_argument('input_file', help='Input JSON file with documents')
     parser.add_argument('--output', help='Output file for chunks')
-    parser.add_argument('--model', default='nlpaueb/legal-bert-base-uncased', help='Legal BERT model to use')
-    parser.add_argument('--chunk_size', type=int, default=384, help='Target chunk size in tokens')
-    parser.add_argument('--overlap', type=int, default=75, help='Overlap size in tokens')
-    parser.add_argument('--clustering_threshold', type=float, default=0.25, help='Clustering distance threshold (lower = more cohesive)')
-    parser.add_argument('--min_cluster_size', type=int, default=2, help='Minimum sentences per cluster')
+    parser.add_argument('--chunk_size', type=int, default=1500, help='Target chunk size in characters')
+    parser.add_argument('--overlap', type=int, default=200, help='Overlap size in characters')
+    parser.add_argument('--min_chunk_size', type=int, default=100, help='Minimum chunk size in characters')
     parser.add_argument('--quality_threshold', type=float, default=0.3, help='Minimum quality score for chunks')
     
     args = parser.parse_args()
     
     # Initialize chunker
-    chunker = SemanticChunker(
-        model_name=args.model,
-        target_chunk_size=args.chunk_size,
-        overlap_size=args.overlap,
-        clustering_threshold=args.clustering_threshold,
-        min_cluster_size=args.min_cluster_size,
+    chunker = RecursiveCharacterTextSplitter(
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.overlap,
+        min_chunk_size=args.min_chunk_size,
         quality_threshold=args.quality_threshold
     )
     
     # Process documents
     output_file = chunker.process_documents(args.input_file, args.output)
-    print(f"\n🎉 Semantic chunking complete! Output: {output_file}")
+    print(f"\n🎉 Recursive character text splitting complete! Output: {output_file}")
+
+
+# Backward compatibility alias
+SemanticChunker = RecursiveCharacterTextSplitter
 
 
 if __name__ == "__main__":
