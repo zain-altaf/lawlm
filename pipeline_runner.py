@@ -287,7 +287,8 @@ class LegalDocumentPipeline:
             Name of created collection
         """
         if not VECTOR_PROCESSOR_AVAILABLE:
-            raise RuntimeError("Vector processing is not available. Cannot create vector index.")
+            logger.warning("⚠️ Vector processing not available. Skipping vector index creation.")
+            return None
             
         logger.info(f"🔍 Starting vector index creation")
         logger.info(f"📂 Input: {chunks_file}")
@@ -433,8 +434,11 @@ class LegalDocumentPipeline:
                     duplicate_check_mode=duplicate_check_mode,
                     overwrite_collection=overwrite_collection
                 )
-                collections['vector'] = vector_coll
-                results['vector_collection'] = vector_coll
+                if vector_coll:
+                    collections['vector'] = vector_coll
+                    results['vector_collection'] = vector_coll
+                else:
+                    logger.warning("⚠️ Vector index creation was skipped due to missing dependencies")
             
             if create_hybrid:
                 logger.info(f"\n" + "="*60)

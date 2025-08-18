@@ -342,6 +342,8 @@ class RecursiveCharacterTextSplitter:
                 'text': chunk_text,
                 'char_count': len(chunk_text),
                 'word_count': len(chunk_text.split()),
+                'token_count': int(len(chunk_text.split()) * 1.3),  # Rough token estimation (~1.3 tokens per word)
+                'sentence_count': len([s for s in chunk_text.split('.') if s.strip()]),
                 'chunking_method': 'recursive_character',
                 'chunk_overlap': self.chunk_overlap,
                 
@@ -414,6 +416,8 @@ class RecursiveCharacterTextSplitter:
             json.dump(all_chunks, f, ensure_ascii=False, indent=2)
         
         # Generate summary
+        total_chars = sum(chunk['char_count'] for chunk in all_chunks)
+        total_words = sum(chunk['word_count'] for chunk in all_chunks)
         total_tokens = sum(chunk['token_count'] for chunk in all_chunks)
         avg_importance = sum(chunk['legal_importance_score'] for chunk in all_chunks) / len(all_chunks) if all_chunks else 0
         
@@ -421,7 +425,9 @@ class RecursiveCharacterTextSplitter:
         logger.info(f"📄 Documents processed: {processed_count}")
         logger.info(f"❌ Documents with errors: {error_count}")
         logger.info(f"🔢 Total chunks created: {len(all_chunks)}")
-        logger.info(f"📝 Total tokens: {total_tokens:,}")
+        logger.info(f"📝 Total characters: {total_chars:,}")
+        logger.info(f"📝 Total words: {total_words:,}")
+        logger.info(f"📝 Total tokens (estimated): {total_tokens:,}")
         logger.info(f"⚖️ Average legal importance: {avg_importance:.2f}")
         logger.info(f"💾 Chunks saved to: {output_file}")
         
