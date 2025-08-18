@@ -948,67 +948,6 @@ class EnhancedVectorProcessor:
         except Exception as e:
             logger.error(f"❌ Hybrid search failed: {e}")
             raise
-    
-    def semantic_search(self, 
-                       query: str,
-                       collection_name: str = None,
-                       limit: int = 10,
-                       score_threshold: float = None) -> List[Dict[str, Any]]:
-        """
-        Perform semantic search using dense vectors only.
-        
-        Args:
-            query: Search query text
-            collection_name: Name of the collection (can be regular or hybrid)
-            limit: Number of results to return
-            score_threshold: Minimum score threshold
-            
-        Returns:
-            List of search results
-        """
-        if collection_name is None:
-            collection_name = self.collection_name
-            
-        # Check if this is a hybrid collection
-        is_hybrid = collection_name.endswith("-hybrid")
-        vector_name = "dense" if is_hybrid else None
-        
-        logger.info(f"🧠 Performing semantic search on '{collection_name}'")
-        
-        # Create enhanced query text
-        enhanced_query = self.query_prefix + query if self.query_prefix else query
-        
-        # Create dense vector for the query
-        query_vector = self.embedder.encode(enhanced_query).tolist()
-        
-        # Perform search
-        search_result = self.client.search(
-            collection_name=collection_name,
-            query_vector=query_vector if not is_hybrid else None,
-            using=vector_name if is_hybrid else None,
-            query_params=models.SearchParams(
-                exact=False,
-                hnsw_ef=128
-            ),
-            limit=limit,
-            score_threshold=score_threshold,
-            with_payload=True,
-            with_vectors=False
-        )
-        
-        # Format results
-        results = []
-        for point in search_result:
-            result = {
-                'id': point.id,
-                'score': point.score,
-                'payload': point.payload,
-                'search_type': 'semantic'
-            }
-            results.append(result)
-        
-        logger.info(f"✅ Semantic search completed: {len(results)} results")
-        return results
 
 
 # Backward compatibility - keep old class name as alias
