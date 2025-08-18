@@ -29,6 +29,8 @@ class DataIngestionConfig:
     retry_delay: float = 1.0
     min_text_length: int = 100
     min_word_count: int = 50
+    court: str = "scotus"           # <-- Add this line
+    num_dockets: int = 5            # <-- Add this line
     
     def __post_init__(self):
         if not self.api_key:
@@ -39,21 +41,32 @@ class DataIngestionConfig:
 
 @dataclass
 class SemanticChunkingConfig:
-    """Configuration for semantic chunking with Legal BERT."""
-    model_name: str = "nlpaueb/legal-bert-base-uncased"
-    target_chunk_size: int = 384
-    overlap_size: int = 75
-    min_chunk_size: int = 100
-    max_chunk_size: int = 512
-    clustering_threshold: float = 0.25
-    min_cluster_size: int = 2
+    """Configuration for text chunking (now using RecursiveCharacterTextSplitter)."""
+    # Note: Kept class name for backward compatibility, but now uses character-based splitting
+    splitter_type: str = "RecursiveCharacterTextSplitter"
+    target_chunk_size: int = 384  # Will be converted to characters (~4x for char count)
+    overlap_size: int = 75        # Will be converted to characters (~4x for char count)
+    min_chunk_size: int = 100     # Will be converted to characters (~4x for char count)
+    max_chunk_size: int = 512     # Legacy parameter, kept for compatibility
+    
+    # Legacy parameters (kept for backward compatibility but not used)
+    model_name: str = "nlpaueb/legal-bert-base-uncased"  # Not used anymore
+    clustering_threshold: float = 0.25                   # Not used anymore
+    min_cluster_size: int = 2                           # Not used anymore
+    device: str = "auto"                                # Not used anymore
+    
+    # Active parameters for RecursiveCharacterTextSplitter
     quality_threshold: float = 0.3
-    device: str = "auto"  # "auto", "cpu", "cuda"
+    separators: Optional[List[str]] = None  # Will use legal-optimized defaults
     
     def __post_init__(self):
+        # Legacy device setting (kept for compatibility)
         if self.device == "auto":
-            import torch
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            try:
+                import torch
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                self.device = "cpu"
 
 
 @dataclass
@@ -78,18 +91,20 @@ class BatchProcessingConfig:
 
 @dataclass
 class VectorProcessingConfig:
-    """Configuration for vector processing and embeddings."""
+    """Configuration for hybrid vector processing (dense + sparse vectors)."""
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     batch_size: int = 50
     memory_cleanup_frequency: int = 100
     device: str = "auto"
-    collection_name_vector: str = "caselaw-chunks-vector"
-    enable_hybrid_processing: bool = False  # Disabled by default for resource optimization
+    collection_name_vector: str = "caselaw-chunks-hybrid"
     
     def __post_init__(self):
         if self.device == "auto":
-            import torch
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            try:
+                import torch
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                self.device = "cpu"
 
 
 @dataclass
@@ -250,17 +265,14 @@ class PipelineConfig:
         if not self.data_ingestion.api_key:
             issues.append("❌ CASELAW_API_KEY is required for data ingestion")
         
-        # Validate chunk sizes
+        # Validate chunk sizes (note: now in characters after 4x conversion)
         if self.semantic_chunking.min_chunk_size >= self.semantic_chunking.target_chunk_size:
             issues.append("❌ min_chunk_size must be less than target_chunk_size")
         
         if self.semantic_chunking.target_chunk_size > self.semantic_chunking.max_chunk_size:
             issues.append("❌ target_chunk_size must be less than max_chunk_size")
         
-        # Validate thresholds
-        if not 0 < self.semantic_chunking.clustering_threshold < 1:
-            issues.append("❌ clustering_threshold must be between 0 and 1")
-        
+        # Validate quality threshold (clustering_threshold is no longer used)
         if not 0 < self.semantic_chunking.quality_threshold < 1:
             issues.append("❌ quality_threshold must be between 0 and 1")
         
@@ -324,11 +336,12 @@ class PipelineConfig:
                 'timeout': self.data_ingestion.timeout_seconds,
                 'min_text_length': self.data_ingestion.min_text_length
             },
-            'semantic_chunking': {
-                'model': self.semantic_chunking.model_name,
-                'target_chunk_size': self.semantic_chunking.target_chunk_size,
+            'text_chunking': {
+                'splitter_type': self.semantic_chunking.splitter_type,
+                'target_chunk_size_chars': self.semantic_chunking.target_chunk_size * 4,
+                'overlap_size_chars': self.semantic_chunking.overlap_size * 4,
                 'quality_threshold': self.semantic_chunking.quality_threshold,
-                'device': self.semantic_chunking.device
+                'legacy_model': self.semantic_chunking.model_name  # For reference only
             },
             'batch_processing': {
                 'enabled': self.batch_processing.enable_batch_processing,
@@ -337,10 +350,11 @@ class PipelineConfig:
                 'vector_batch_size': self.batch_processing.vector_processing_batch_size,
                 'checkpoint_interval': self.batch_processing.checkpoint_interval
             },
-            'vector_processing': {
+            'hybrid_processing': {
                 'embedding_model': self.vector_processing.embedding_model,
                 'batch_size': self.vector_processing.batch_size,
-                'device': self.vector_processing.device
+                'device': self.vector_processing.device,
+                'search_capabilities': 'semantic + keyword (RRF fusion)'
             },
             'qdrant': {
                 'url': self.qdrant.url,
