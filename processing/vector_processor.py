@@ -16,6 +16,9 @@ from datetime import datetime
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient, models
 from dotenv import load_dotenv
+from sklearn.feature_extraction.text import TfidfVectorizer
+from scipy.sparse import csr_matrix
+import numpy as np
 
 # Handle torch import gracefully
 try:
@@ -448,7 +451,7 @@ class EnhancedVectorProcessor:
                 
                 points.append(
                     models.PointStruct(
-                        id=chunk.get("chunk_id", str(uuid.uuid4())),
+                        id=str(uuid.uuid4()),  # Always use a valid UUID string
                         vector=vector_embedding,
                         payload=enhanced_payload
                     )
@@ -590,6 +593,422 @@ class EnhancedVectorProcessor:
             SentenceTransformer: The loaded embedding model
         """
         return self.embedder
+    
+    def _create_sparse_vector(self, text: str, tfidf_vectorizer: TfidfVectorizer) -> Dict[int, float]:
+        """
+        Create sparse vector using TF-IDF for keyword-based search.
+        
+        Args:
+            text: Text to vectorize
+            tfidf_vectorizer: Fitted TF-IDF vectorizer
+            
+        Returns:
+            Sparse vector as dictionary {index: value}
+        """
+        # Transform text to TF-IDF vector
+        tfidf_vector = tfidf_vectorizer.transform([text])
+        
+        # Convert sparse matrix to dictionary format for Qdrant
+        sparse_dict = {}
+        coo = tfidf_vector.tocoo()
+        for i, j, value in zip(coo.row, coo.col, coo.data):
+            if value > 0.01:  # Filter out very low values to reduce storage
+                sparse_dict[j] = float(value)
+        
+        return sparse_dict
+    
+    def create_hybrid_index(self, chunks: List[Dict[str, Any]], 
+                           collection_name: str = None,
+                           batch_size: int = 50,
+                           checkpoint_interval: int = 100,
+                           skip_duplicates: bool = True,
+                           overwrite_collection: bool = False) -> str:
+        """
+        Create hybrid index with both dense (semantic) and sparse (keyword) vectors.
+        
+        Args:
+            chunks: List of chunk dictionaries
+            collection_name: Name of the hybrid collection
+            batch_size: Number of chunks per batch
+            checkpoint_interval: Interval for progress logging
+            skip_duplicates: Whether to skip duplicate chunks
+            overwrite_collection: Whether to recreate collection
+            
+        Returns:
+            Collection name
+        """
+        if collection_name is None:
+            collection_name = self.collection_name + "-hybrid"
+            
+        logger.info(f"🔍 Creating hybrid index with {len(chunks)} chunks")
+        logger.info(f"🤖 Dense vectors: {self.model_name}")
+        logger.info(f"📊 Sparse vectors: TF-IDF")
+        
+        # Filter duplicates if requested
+        original_chunk_count = len(chunks)
+        duplicates_found = 0
+        
+        if skip_duplicates and not overwrite_collection:
+            # Check against existing hybrid collection
+            temp_collection_name = self.collection_name
+            self.collection_name = collection_name  # Temporarily change for duplicate check
+            try:
+                chunks, duplicates_found, _ = self.filter_duplicate_chunks(chunks, "document_id")
+                if len(chunks) == 0:
+                    logger.info("✅ All chunks already exist in hybrid collection - nothing to process!")
+                    return collection_name
+            finally:
+                self.collection_name = temp_collection_name  # Restore original collection name
+        
+        # Prepare texts for TF-IDF vectorization
+        logger.info("📝 Preparing texts for TF-IDF vectorization...")
+        texts = []
+        valid_chunks = []
+        
+        for chunk in chunks:
+            chunk_text = chunk.get("text", "")
+            if chunk_text and len(chunk_text.strip()) >= 10:
+                # Use enhanced text for both dense and sparse vectors
+                enhanced_text = self._create_enhanced_text(chunk)
+                texts.append(enhanced_text)
+                valid_chunks.append(chunk)
+        
+        if not texts:
+            logger.warning("⚠️ No valid texts found for hybrid indexing")
+            return collection_name
+        
+        logger.info(f"📊 Valid chunks for hybrid indexing: {len(valid_chunks)}")
+        
+        # Fit TF-IDF vectorizer
+        logger.info("🔧 Fitting TF-IDF vectorizer...")
+        tfidf_vectorizer = TfidfVectorizer(
+            max_features=10000,  # Limit vocabulary size
+            stop_words='english',
+            ngram_range=(1, 2),  # Unigrams and bigrams
+            min_df=1,  # Minimum document frequency
+            max_df=0.8,  # Maximum document frequency
+            sublinear_tf=True,  # Use sublinear TF scaling
+            norm='l2'  # L2 normalization
+        )
+        
+        tfidf_vectorizer.fit(texts)
+        vocab_size = len(tfidf_vectorizer.vocabulary_)
+        logger.info(f"📚 TF-IDF vocabulary size: {vocab_size}")
+        
+        # Handle collection creation/deletion
+        collection_existed = self.client.collection_exists(collection_name=collection_name)
+        
+        if overwrite_collection and collection_existed:
+            self.client.delete_collection(collection_name=collection_name)
+            logger.info(f"🗑️ Deleted existing hybrid collection '{collection_name}' (overwrite mode)")
+            collection_existed = False
+        
+        # Create hybrid collection with both dense and sparse vectors
+        if not collection_existed:
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config={
+                    "dense": models.VectorParams(
+                        size=self.vector_size,
+                        distance=models.Distance.COSINE
+                    )
+                },
+                sparse_vectors_config={
+                    "sparse": models.SparseVectorParams(
+                        index=models.SparseIndexParams()
+                    )
+                }
+            )
+            logger.info(f"📁 Created hybrid collection '{collection_name}'")
+            logger.info(f"   Dense vectors: {self.vector_size}D, Cosine distance")
+            logger.info(f"   Sparse vectors: TF-IDF with {vocab_size} features")
+        else:
+            logger.info(f"📁 Using existing hybrid collection '{collection_name}'")
+        
+        # Process chunks and create hybrid embeddings
+        points = []
+        processed_count = 0
+        error_count = 0
+        
+        # Log initial memory usage
+        initial_memory = get_memory_usage()
+        logger.info(f"💾 Initial memory usage: {initial_memory['ram_mb']:.1f}MB RAM")
+        
+        for i, (chunk, text) in enumerate(zip(valid_chunks, texts)):
+            try:
+                # Create dense vector embedding
+                dense_vector = self.embedder.encode(text).tolist()
+                
+                # Create sparse vector
+                sparse_vector = self._create_sparse_vector(text, tfidf_vectorizer)
+                
+                # Prepare enhanced payload
+                enhanced_payload = {
+                    # Core identifiers
+                    "chunk_id": chunk.get("chunk_id"),
+                    "document_id": chunk.get("document_id"),
+                    "docket_number": chunk.get("docket_number"),
+                    "case_name": chunk.get("case_name"),
+                    "court_id": chunk.get("court_id"),
+                    
+                    # Chunk metadata
+                    "chunk_index": chunk.get("chunk_index", 0),
+                    "text": chunk.get("text", ""),
+                    "token_count": chunk.get("token_count", 0),
+                    "sentence_count": chunk.get("sentence_count", 0),
+                    
+                    # Legal analysis
+                    "semantic_topic": chunk.get("semantic_topic", "general"),
+                    "legal_importance_score": chunk.get("legal_importance_score", 0.0),
+                    "keyword_density": chunk.get("keyword_density", 0.0),
+                    "citation_count": chunk.get("citation_count", 0),
+                    "citations_in_chunk": chunk.get("citations_in_chunk", []),
+                    "chunk_confidence": chunk.get("chunk_confidence", 0.0),
+                    
+                    # Author and type info
+                    "author": chunk.get("author", ""),
+                    "opinion_type": chunk.get("opinion_type", ""),
+                    "date_filed": chunk.get("date_filed"),
+                    
+                    # Processing metadata
+                    "embedding_model": self.model_name,
+                    "enhanced_text": text,
+                    "search_type": "hybrid",
+                    "sparse_vector_size": len(sparse_vector),
+                    "processed_at": datetime.now().isoformat()
+                }
+                
+                points.append(
+                    models.PointStruct(
+                        id=str(uuid.uuid4()),  # Always use a valid UUID string
+                        vector={
+                            "dense": dense_vector,
+                            "sparse": models.SparseVector(
+                                indices=list(sparse_vector.keys()),
+                                values=list(sparse_vector.values())
+                            )
+                        },
+                        payload=enhanced_payload
+                    )
+                )
+                processed_count += 1
+                
+                # Process in batches to avoid memory issues
+                if len(points) >= batch_size:
+                    self.client.upsert(
+                        collection_name=collection_name,
+                        points=points,
+                        wait=True
+                    )
+                    logger.info(f"  Uploaded hybrid batch of {len(points)} chunks...")
+                    points = []
+                    
+                    # Memory monitoring and cleanup
+                    if processed_count % checkpoint_interval == 0:
+                        gc.collect()
+                        if TORCH_AVAILABLE and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        
+                        current_memory = get_memory_usage()
+                        logger.info(f"💾 Checkpoint {processed_count}: Memory usage: {current_memory['ram_mb']:.1f}MB RAM")
+                    
+                if processed_count % checkpoint_interval == 0:
+                    logger.info(f"  Processed {processed_count} hybrid chunks so far...")
+                    
+            except Exception as e:
+                logger.error(f"Error processing chunk {chunk.get('chunk_id', 'unknown')} for hybrid index: {e}")
+                error_count += 1
+                continue
+        
+        # Upload remaining points
+        if points:
+            self.client.upsert(
+                collection_name=collection_name,
+                points=points,
+                wait=True
+            )
+            logger.info(f"  Uploaded final hybrid batch of {len(points)} chunks")
+        
+        # Final cleanup
+        gc.collect()
+        if TORCH_AVAILABLE and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info(f"✅ Hybrid index creation completed!")
+        logger.info(f"📊 Hybrid processing summary:")
+        logger.info(f"   Original chunks: {original_chunk_count}")
+        if duplicates_found > 0:
+            logger.info(f"   Duplicates skipped: {duplicates_found}")
+        logger.info(f"   New chunks processed: {processed_count}")
+        logger.info(f"   Failed to process: {error_count}")
+        logger.info(f"🔍 Hybrid collection: {collection_name}")
+        logger.info(f"   Dense vectors: {self.vector_size}D semantic embeddings")
+        logger.info(f"   Sparse vectors: TF-IDF with {vocab_size} features")
+        
+        return collection_name
+    
+    def hybrid_search(self, 
+                     query: str,
+                     collection_name: str = None,
+                     limit: int = 10,
+                     dense_weight: float = 0.7,
+                     sparse_weight: float = 0.3,
+                     score_threshold: float = None) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search combining dense and sparse vectors using Reciprocal Rank Fusion.
+        
+        Args:
+            query: Search query text
+            collection_name: Name of the hybrid collection (defaults to collection_name + "-hybrid")
+            limit: Number of results to return
+            dense_weight: Weight for dense (semantic) search results (0.0 to 1.0)
+            sparse_weight: Weight for sparse (keyword) search results (0.0 to 1.0)
+            score_threshold: Minimum score threshold for results
+            
+        Returns:
+            List of search results with scores and metadata
+        """
+        if collection_name is None:
+            collection_name = self.collection_name + "-hybrid"
+            
+        if not self.client.collection_exists(collection_name):
+            raise ValueError(f"Hybrid collection '{collection_name}' does not exist. Create it first using create_hybrid_index.")
+        
+        logger.info(f"🔍 Performing hybrid search on '{collection_name}'")
+        logger.info(f"📊 Query: {query}")
+        logger.info(f"⚖️ Dense weight: {dense_weight}, Sparse weight: {sparse_weight}")
+        
+        # Create enhanced query text (same as used during indexing)
+        enhanced_query = self.query_prefix + query if self.query_prefix else query
+        
+        # Create dense vector for the query
+        dense_vector = self.embedder.encode(enhanced_query).tolist()
+        
+        # Create sparse vector for the query using TF-IDF
+        # Note: For production use, you'd want to save the TF-IDF vectorizer from indexing
+        # For now, we'll create a simple sparse representation based on keywords
+        query_words = query.lower().split()
+        
+        # Simple sparse vector creation (in production, use the same TF-IDF vectorizer from indexing)
+        sparse_indices = []
+        sparse_values = []
+        for i, word in enumerate(query_words[:20]):  # Limit to first 20 words
+            # Use simple word hash as index (this is a simplified approach)
+            word_hash = hash(word) % 10000  # Match the max_features from TF-IDF
+            if word_hash not in sparse_indices:
+                sparse_indices.append(word_hash)
+                sparse_values.append(1.0)  # Simple binary weights
+        
+        sparse_vector = models.SparseVector(
+            indices=sparse_indices,
+            values=sparse_values
+        )
+        
+        # Perform hybrid search using prefetch and fusion
+        try:
+            search_result = self.client.query_points(
+                collection_name=collection_name,
+                prefetch=[
+                    # Dense vector search (semantic similarity)
+                    models.Prefetch(
+                        query=dense_vector,
+                        using="dense",
+                        limit=limit * 2,  # Get more results for fusion
+                        score_threshold=score_threshold
+                    ),
+                    # Sparse vector search (keyword matching)
+                    models.Prefetch(
+                        query=sparse_vector,
+                        using="sparse", 
+                        limit=limit * 2,  # Get more results for fusion
+                        score_threshold=score_threshold
+                    )
+                ],
+                # Combine results using Reciprocal Rank Fusion (RRF)
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                with_payload=True,
+                with_vectors=False  # Don't return vectors to save bandwidth
+            )
+            
+            # Format results
+            results = []
+            for point in search_result.points:
+                result = {
+                    'id': point.id,
+                    'score': point.score,
+                    'payload': point.payload,
+                    'search_type': 'hybrid'
+                }
+                results.append(result)
+            
+            logger.info(f"✅ Hybrid search completed: {len(results)} results")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Hybrid search failed: {e}")
+            raise
+    
+    def semantic_search(self, 
+                       query: str,
+                       collection_name: str = None,
+                       limit: int = 10,
+                       score_threshold: float = None) -> List[Dict[str, Any]]:
+        """
+        Perform semantic search using dense vectors only.
+        
+        Args:
+            query: Search query text
+            collection_name: Name of the collection (can be regular or hybrid)
+            limit: Number of results to return
+            score_threshold: Minimum score threshold
+            
+        Returns:
+            List of search results
+        """
+        if collection_name is None:
+            collection_name = self.collection_name
+            
+        # Check if this is a hybrid collection
+        is_hybrid = collection_name.endswith("-hybrid")
+        vector_name = "dense" if is_hybrid else None
+        
+        logger.info(f"🧠 Performing semantic search on '{collection_name}'")
+        
+        # Create enhanced query text
+        enhanced_query = self.query_prefix + query if self.query_prefix else query
+        
+        # Create dense vector for the query
+        query_vector = self.embedder.encode(enhanced_query).tolist()
+        
+        # Perform search
+        search_result = self.client.search(
+            collection_name=collection_name,
+            query_vector=query_vector if not is_hybrid else None,
+            using=vector_name if is_hybrid else None,
+            query_params=models.SearchParams(
+                exact=False,
+                hnsw_ef=128
+            ),
+            limit=limit,
+            score_threshold=score_threshold,
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        # Format results
+        results = []
+        for point in search_result:
+            result = {
+                'id': point.id,
+                'score': point.score,
+                'payload': point.payload,
+                'search_type': 'semantic'
+            }
+            results.append(result)
+        
+        logger.info(f"✅ Semantic search completed: {len(results)} results")
+        return results
 
 
 # Backward compatibility - keep old class name as alias

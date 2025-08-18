@@ -29,6 +29,8 @@ class DataIngestionConfig:
     retry_delay: float = 1.0
     min_text_length: int = 100
     min_word_count: int = 50
+    court: str = "scotus"           # <-- Add this line
+    num_dockets: int = 5            # <-- Add this line
     
     def __post_init__(self):
         if not self.api_key:
@@ -89,13 +91,12 @@ class BatchProcessingConfig:
 
 @dataclass
 class VectorProcessingConfig:
-    """Configuration for vector processing and embeddings."""
+    """Configuration for hybrid vector processing (dense + sparse vectors)."""
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     batch_size: int = 50
     memory_cleanup_frequency: int = 100
     device: str = "auto"
-    collection_name_vector: str = "caselaw-chunks-vector"
-    enable_hybrid_processing: bool = False  # Disabled by default for resource optimization
+    collection_name_vector: str = "caselaw-chunks-hybrid"
     
     def __post_init__(self):
         if self.device == "auto":
@@ -349,10 +350,11 @@ class PipelineConfig:
                 'vector_batch_size': self.batch_processing.vector_processing_batch_size,
                 'checkpoint_interval': self.batch_processing.checkpoint_interval
             },
-            'vector_processing': {
+            'hybrid_processing': {
                 'embedding_model': self.vector_processing.embedding_model,
                 'batch_size': self.vector_processing.batch_size,
-                'device': self.vector_processing.device
+                'device': self.vector_processing.device,
+                'search_capabilities': 'semantic + keyword (RRF fusion)'
             },
             'qdrant': {
                 'url': self.qdrant.url,
