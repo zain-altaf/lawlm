@@ -11,12 +11,20 @@ import os
 import json
 import logging
 import gc
-import torch
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient, models
 from dotenv import load_dotenv
+
+# Handle torch import gracefully
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: PyTorch not available ({e}). GPU acceleration will be disabled.")
+    torch = None
+    TORCH_AVAILABLE = False
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -33,7 +41,7 @@ def get_memory_usage() -> Dict[str, float]:
         'ram_percent': process.memory_percent()
     }
     
-    if torch.cuda.is_available():
+    if TORCH_AVAILABLE and torch.cuda.is_available():
         usage['gpu_allocated_mb'] = torch.cuda.memory_allocated() / 1024 / 1024
         usage['gpu_reserved_mb'] = torch.cuda.memory_reserved() / 1024 / 1024
     
@@ -74,7 +82,7 @@ class EnhancedVectorProcessor:
         
         # Optimize model for inference
         self.embedder.eval()
-        if torch.cuda.is_available():
+        if TORCH_AVAILABLE and torch.cuda.is_available():
             logger.info(f"Using GPU for embeddings")
         else:
             logger.info(f"Using CPU for embeddings")
@@ -362,7 +370,7 @@ class EnhancedVectorProcessor:
         # Log initial memory usage
         initial_memory = get_memory_usage()
         logger.info(f"💾 Initial memory usage: {initial_memory['ram_mb']:.1f}MB RAM ({initial_memory['ram_percent']:.1f}%)")
-        if torch.cuda.is_available():
+        if TORCH_AVAILABLE and torch.cuda.is_available():
             logger.info(f"🖥️ GPU memory: {initial_memory.get('gpu_allocated_mb', 0):.1f}MB allocated")
         
         # Handle collection creation/deletion
@@ -460,13 +468,13 @@ class EnhancedVectorProcessor:
                     # Force garbage collection and memory monitoring at checkpoint intervals
                     if processed_count % checkpoint_interval == 0:
                         gc.collect()
-                        if torch.cuda.is_available():
+                        if TORCH_AVAILABLE and torch.cuda.is_available():
                             torch.cuda.empty_cache()
                         
                         # Log memory usage and progress at checkpoints
                         current_memory = get_memory_usage()
                         logger.info(f"💾 Checkpoint {processed_count}: Memory usage: {current_memory['ram_mb']:.1f}MB RAM ({current_memory['ram_percent']:.1f}%)")
-                        if torch.cuda.is_available():
+                        if TORCH_AVAILABLE and torch.cuda.is_available():
                             logger.info(f"🖥️ GPU memory: {current_memory.get('gpu_allocated_mb', 0):.1f}MB allocated")
                     
                 if processed_count % checkpoint_interval == 0:
@@ -488,7 +496,7 @@ class EnhancedVectorProcessor:
             
         # Final cleanup
         gc.collect()
-        if torch.cuda.is_available():
+        if TORCH_AVAILABLE and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
         logger.info(f"✅ Vector processing completed!")

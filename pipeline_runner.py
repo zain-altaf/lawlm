@@ -23,9 +23,17 @@ from datetime import datetime
 # Import our processing modules
 from data_ingestion import process_docket, enhanced_text_processing, process_docket_in_batches
 from processing.smart_chunking import SemanticChunker
-from processing.vector_processor import EnhancedVectorProcessor
 from config import PipelineConfig, load_config
 from batch_utils import BatchProcessor, create_job_id
+
+# Handle vector processor import gracefully
+try:
+    from processing.vector_processor import EnhancedVectorProcessor
+    VECTOR_PROCESSOR_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Vector processing not available ({e}). Only chunking will work.")
+    EnhancedVectorProcessor = None
+    VECTOR_PROCESSOR_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(
@@ -112,6 +120,9 @@ class LegalDocumentPipeline:
     @property
     def vector_processor(self) -> EnhancedVectorProcessor:
         """Lazy load the vector processor."""
+        if not VECTOR_PROCESSOR_AVAILABLE:
+            raise RuntimeError("Vector processing is not available. Check PyTorch installation.")
+            
         if self._vector_processor is None:
             config = self.config.vector_processing
             logger.info(f"🔍 Loading vector processor: {config.embedding_model}")
@@ -124,6 +135,10 @@ class LegalDocumentPipeline:
     
     def get_hybrid_processor(self):
         """Get hybrid processor only when explicitly needed (not used by default)."""
+        if not VECTOR_PROCESSOR_AVAILABLE:
+            logger.error("Hybrid processor not available - vector processing is disabled")
+            return None
+            
         try:
             from processing.hybrid_processor import EnhancedHybridProcessor
             config = self.config.vector_processing
@@ -136,8 +151,8 @@ class LegalDocumentPipeline:
                 sparse_model="Qdrant/bm25",
                 qdrant_url=self.config.qdrant.url
             )
-        except ImportError:
-            logger.error("Hybrid processor not available")
+        except ImportError as e:
+            logger.error(f"Hybrid processor not available: {e}")
             return None
     
     def ingest_documents(self, 
@@ -271,6 +286,9 @@ class LegalDocumentPipeline:
         Returns:
             Name of created collection
         """
+        if not VECTOR_PROCESSOR_AVAILABLE:
+            raise RuntimeError("Vector processing is not available. Cannot create vector index.")
+            
         logger.info(f"🔍 Starting vector index creation")
         logger.info(f"📂 Input: {chunks_file}")
         
