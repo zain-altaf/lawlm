@@ -29,8 +29,8 @@ class DataIngestionConfig:
     retry_delay: float = 1.0
     min_text_length: int = 100
     min_word_count: int = 50
-    court: str = "scotus"           # <-- Add this line
-    num_dockets: int = 5            # <-- Add this line
+    court: str = "scotus"           
+    num_dockets: int = 5            
     
     def __post_init__(self):
         if not self.api_key:

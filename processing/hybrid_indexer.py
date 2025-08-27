@@ -329,6 +329,95 @@ class EnhancedVectorProcessor:
             logger.warning(f"Could not check free tier limits: {e}")
             return True  # Allow processing if we can't check
     
+    def process_and_upload_batch(self, chunks: List[Dict[str, Any]], 
+                                collection_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Process and immediately upload a batch of chunks to Qdrant.
+        Designed for incremental processing where each batch is uploaded immediately.
+        
+        Args:
+            chunks: List of chunks to process and upload
+            collection_name: Optional collection name (uses self.collection_name if not provided)
+            
+        Returns:
+            Dict with processing results
+        """
+        if not chunks:
+            return {'status': 'no_chunks', 'vectors_created': 0}
+        
+        collection = collection_name or self.collection_name
+        
+        try:
+            # Ensure collection exists
+            if not self.client.collection_exists(collection_name=collection):
+                # Create collection with proper vector configuration
+                self.client.create_collection(
+                    collection_name=collection,
+                    vectors_config=models.VectorParams(
+                        size=self.vector_size,
+                        distance=models.Distance.COSINE
+                    )
+                )
+            
+            # Create embeddings for chunks
+            texts = [chunk['text'] for chunk in chunks]
+            if self.passage_prefix:
+                texts = [self.passage_prefix + text for text in texts]
+            
+            embeddings = self.embedder.encode(
+                texts,
+                batch_size=min(len(texts), 16),
+                show_progress_bar=False,
+                convert_to_numpy=True
+            )
+            
+            # Prepare points for upload
+            points = []
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                point_id = str(uuid.uuid4())
+                
+                # Create payload with all chunk metadata
+                payload = {
+                    'chunk_id': chunk.get('chunk_id', point_id),
+                    'document_id': chunk.get('document_id', ''),
+                    'docket_number': chunk.get('docket_number', ''),
+                    'case_name': chunk.get('case_name', ''),
+                    'court_id': chunk.get('court_id', ''),
+                    'chunk_index': chunk.get('chunk_index', i),
+                    'text': chunk['text'],
+                    'author': chunk.get('author', ''),
+                    'opinion_type': chunk.get('opinion_type', ''),
+                    'date_filed': chunk.get('date_filed', ''),
+                    'token_count': chunk.get('token_count', len(chunk['text'].split())),
+                    'citation_count': chunk.get('citation_count', 0)
+                }
+                
+                points.append(models.PointStruct(
+                    id=point_id,
+                    vector=embedding.tolist(),
+                    payload=payload
+                ))
+            
+            # Upload to Qdrant
+            self.client.upsert(
+                collection_name=collection,
+                points=points
+            )
+            
+            return {
+                'status': 'success',
+                'vectors_created': len(points),
+                'collection': collection
+            }
+            
+        except Exception as e:
+            logger.error(f"Error processing batch: {e}")
+            return {
+                'status': 'error',
+                'vectors_created': 0,
+                'error': str(e)
+            }
+    
     def process_chunks(self, chunks: List[Dict[str, Any]], 
                       batch_size: int = 50, 
                       checkpoint_interval: int = 100,

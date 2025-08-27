@@ -147,8 +147,8 @@ def process_docket(court: str = 'scotus', num_dockets: int = 5, progress_callbac
         RuntimeError: If no documents could be processed
     """
     # Validate inputs
-    if num_dockets < 1 or num_dockets > 100:
-        raise ValueError(f"num_dockets must be between 1 and 100, got {num_dockets}")
+    if num_dockets < 1:
+        raise ValueError(f"num_dockets must be at least 1, got {num_dockets}")
     
     if not CASELAW_API_KEY:
         raise RuntimeError("CASELAW_API_KEY environment variable is required")
@@ -160,14 +160,43 @@ def process_docket(court: str = 'scotus', num_dockets: int = 5, progress_callbac
         progress_callback('started', {'court': court, 'num_dockets': num_dockets})
     
     try:
-        docket_resp = requests.get(
-            "https://www.courtlistener.com/api/rest/v4/dockets/",
-            params={"court": court, "page_size": num_dockets},
-            headers=HEADERS,
-            timeout=30  # Add timeout
-        )
-        docket_resp.raise_for_status()
-        dockets = docket_resp.json().get("results", [])
+        # CourtListener API has pagination limits, so we may need multiple requests
+        all_dockets = []
+        page = 1
+        max_page_size = min(num_dockets, 200)  # API limit is typically 200
+        
+        while len(all_dockets) < num_dockets:
+            remaining_needed = num_dockets - len(all_dockets)
+            page_size = min(remaining_needed, max_page_size)
+            
+            docket_resp = requests.get(
+                "https://www.courtlistener.com/api/rest/v4/dockets/",
+                params={
+                    "court": court, 
+                    "page_size": page_size,
+                    "page": page
+                },
+                headers=HEADERS,
+                timeout=30
+            )
+
+            docket_resp.raise_for_status()
+            
+            page_dockets = docket_resp.json().get("results", [])
+            if not page_dockets:
+                print(f"⚠️ No more dockets available (got {len(all_dockets)} total)")
+                break
+                
+            all_dockets.extend(page_dockets)
+            print(f"📄 Page {page}: Retrieved {len(page_dockets)} dockets (total: {len(all_dockets)})")
+            
+            # Stop if we got fewer results than requested (end of available dockets)
+            if len(page_dockets) < page_size:
+                break
+                
+            page += 1
+            
+        dockets = all_dockets[:num_dockets]  # Limit to exactly what was requested
         
         if not dockets:
             raise RuntimeError(f"No dockets found for court '{court}'. Check court identifier.")
@@ -579,8 +608,11 @@ def main():
     args = parser.parse_args()
 
     # Validate inputs
-    if args.num_dockets < 1 or args.num_dockets > 100:
-        print("Warning: num_dockets should be between 1 and 100 for reasonable processing time")
+    if args.num_dockets < 1:
+        print("Error: num_dockets must be at least 1")
+        return
+    if args.num_dockets > 100:
+        print("Warning: Large numbers of dockets may take significant time and hit API rate limits")
     
     # Create data directory if it doesn't exist
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
@@ -627,8 +659,8 @@ def main():
         print(f"📚 Total citations found: {total_citations}")
         print(f"📝 Total words processed: {total_words:,}")
         print(f"💾 Data saved to: {args.output}")
-        print(f"\n🔄 Next step: Run semantic chunking pipeline")
-        print("   python -c \"from processing.smart_chunking import SemanticChunker; SemanticChunker().process_documents('data/raw_cases_enhanced.json')\"")
+        print(f"\n🔄 Next step: Run complete pipeline")
+        print("   python pipeline_runner.py --court scotus --num-dockets 5")
         
     except Exception as e:
         print(f"❌ Error during data ingestion: {e}")
