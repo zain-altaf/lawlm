@@ -10,8 +10,11 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements file first for better Docker layer caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies with increased timeout
+# Use PyTorch CPU-only index for faster downloads
+RUN pip install --no-cache-dir --timeout=1200 --retries=5 \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r requirements.txt
 
 # Copy all Python modules required for the pipeline
 COPY pipeline_runner.py .

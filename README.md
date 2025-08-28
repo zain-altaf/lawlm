@@ -21,42 +21,48 @@ CourtListener API → Data Ingestion → Text Chunking → Vector Processing →
 
 ### Pipeline Flow:
 1. **Data Ingestion**: Fetch legal documents from CourtListener API
-2. **Text Chunking**: Break documents into coherent chunks using RecursiveCharacterTextSplitter
-3. **Vector Processing**: Create semantic embeddings using BGE models
-4. **Storage**: Store vectors in Qdrant vector database with hybrid search capabilities
+2. **Text Chunking**: Break documents into coherent chunks using RecursiveCharacterTextSplitter. It prioritizes chunking paragraphs and sentences that are complete along with some overlapping between chunks of text.
+3. **Vector Processing**: Create semantic embeddings using BGE model (this can be modified to other embedding models if the user chooses)
+4. **Storage**: Store vector representations of chunks along with payloads with descriptive fields in Qdrant vector database with hybrid search capabilities
 
 ## 📁 File Structure
 
 ```
 lawlm/
 ├── README.md                   # Main documentation
-├── CLAUDE.md                   # Project instructions for Claude Code
 ├── requirements.txt            # Python dependencies
 ├── pipeline_runner.py          # Main pipeline orchestrator
-├── config.py                  # Configuration management
+├── config.py                   # Configuration management
 ├── fetch_and_process.py        # CourtListener API integration
 ├── hybrid_indexer.py           # Creates hybrid (vector + keyword) search indexes
 ├── legal_rag_query.py          # RAG system for querying the vector database
 ├── get_unique_dockets.py       # Utility for managing dockets
 ├── validate_missing_dockets.py # Validation utilities
-├── manage_qdrant.sh           # Qdrant management script
-├── data/                      # Working directory for pipeline files
-├── qdrant_storage/           # Local Qdrant storage
+├── manage_qdrant.sh            # Qdrant management script
+├── data/                       # Working directory for pipeline files
+├── qdrant_storage/             # Local Qdrant storage
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-1. **Python 3.8+** with pip
+1. **Python 3.9+** with pip
 2. **CourtListener API key** ([get one here](https://www.courtlistener.com/api/))
 3. **Qdrant** (local or cloud deployment)
 
 ### Installation
 
+**Note**: It is strongly recommended that you use a package manager (such as conda, or venv) when working with dependencies. You can install miniconda, a minimal installer for Conda here: https://www.anaconda.com/docs/getting-started/miniconda/install
+
+
 ```bash
+# Create and activate a miniconda environment
+conda create -n lawlmenv -y python=3.9
+conda activate lawlmenv
+
 # Clone repository
-git clone <repository-url>
+git clone https://github.com/zain-altaf/lawlm.git
 cd lawlm
 
 # Install dependencies
