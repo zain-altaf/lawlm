@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from processing.hybrid_indexer import EnhancedVectorProcessor
+from hybrid_indexer import EnhancedVectorProcessor
 
 # Load environment variables
 load_dotenv()

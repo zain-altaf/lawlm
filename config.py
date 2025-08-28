@@ -7,6 +7,7 @@ validation, and monitoring capabilities.
 
 import os
 import json
+import argparse
 import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
@@ -40,53 +41,14 @@ class DataIngestionConfig:
 
 
 @dataclass
-class SemanticChunkingConfig:
-    """Configuration for text chunking (now using RecursiveCharacterTextSplitter)."""
-    # Note: Kept class name for backward compatibility, but now uses character-based splitting
-    splitter_type: str = "RecursiveCharacterTextSplitter"
-    target_chunk_size: int = 384  # Will be converted to characters (~4x for char count)
-    overlap_size: int = 75        # Will be converted to characters (~4x for char count)
-    min_chunk_size: int = 100     # Will be converted to characters (~4x for char count)
-    max_chunk_size: int = 512     # Legacy parameter, kept for compatibility
-    
-    # Legacy parameters (kept for backward compatibility but not used)
-    model_name: str = "nlpaueb/legal-bert-base-uncased"  # Not used anymore
-    clustering_threshold: float = 0.25                   # Not used anymore
-    min_cluster_size: int = 2                           # Not used anymore
-    device: str = "auto"                                # Not used anymore
-    
-    # Active parameters for RecursiveCharacterTextSplitter
-    quality_threshold: float = 0.3
-    separators: Optional[List[str]] = None  # Will use legal-optimized defaults
-    
-    def __post_init__(self):
-        # Legacy device setting (kept for compatibility)
-        if self.device == "auto":
-            try:
-                import torch
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                self.device = "cpu"
+class TextSplitterConfig:
+    """Configuration for RecursiveCharacterTextSplitter."""
+    chunk_size_chars: int = 1536        # Character count for chunks (was 384 tokens * 4)
+    overlap_chars: int = 300            # Character overlap between chunks (was 75 tokens * 4)
+    min_chunk_size_chars: int = 400     # Minimum chunk size in characters (was 100 tokens * 4)
+    quality_threshold: float = 0.3      # Quality threshold for chunks
+    separators: Optional[List[str]] = None  # Will use legal-optimized defaults if None
 
-
-@dataclass
-class BatchProcessingConfig:
-    """Configuration for batch processing operations."""
-    enable_batch_processing: bool = True
-    default_batch_size: int = 5
-    max_batch_size: int = 10
-    vector_processing_batch_size: int = 50
-    checkpoint_interval: int = 100
-    save_intermediate_batches: bool = True
-    cleanup_batch_files: bool = True
-    resume_failed_batches: bool = True
-    max_concurrent_batches: int = 1
-    
-    def __post_init__(self):
-        # Validate batch sizes
-        if self.default_batch_size > self.max_batch_size:
-            logger.warning(f"default_batch_size ({self.default_batch_size}) > max_batch_size ({self.max_batch_size}), adjusting")
-            self.default_batch_size = self.max_batch_size
 
 
 @dataclass
@@ -186,14 +148,13 @@ class PipelineConfig:
         """
         # Initialize all component configurations
         self.data_ingestion = DataIngestionConfig()
-        self.semantic_chunking = SemanticChunkingConfig()
-        self.batch_processing = BatchProcessingConfig()
+        self.text_splitter = TextSplitterConfig()
         self.vector_processing = VectorProcessingConfig()
         self.qdrant = QdrantConfig()
         self.processing = ProcessingConfig()
         self.monitoring = MonitoringConfig()
-        
-        # Load from file if provided
+
+        # Load from file if provided (this is a JSON that you need to provide)
         if config_file and Path(config_file).exists():
             self.load_from_file(config_file)
         
@@ -229,8 +190,7 @@ class PipelineConfig:
         try:
             config_data = {
                 'data_ingestion': asdict(self.data_ingestion),
-                'semantic_chunking': asdict(self.semantic_chunking),
-                'batch_processing': asdict(self.batch_processing),
+                'text_splitter': asdict(self.text_splitter),
                 'vector_processing': asdict(self.vector_processing),
                 'qdrant': asdict(self.qdrant),
                 'processing': asdict(self.processing),
@@ -265,26 +225,13 @@ class PipelineConfig:
         if not self.data_ingestion.api_key:
             issues.append("❌ CASELAW_API_KEY is required for data ingestion")
         
-        # Validate chunk sizes (note: now in characters after 4x conversion)
-        if self.semantic_chunking.min_chunk_size >= self.semantic_chunking.target_chunk_size:
-            issues.append("❌ min_chunk_size must be less than target_chunk_size")
+        # Validate chunk sizes
+        if self.text_splitter.min_chunk_size_chars >= self.text_splitter.chunk_size_chars:
+            issues.append("❌ min_chunk_size_chars must be less than chunk_size_chars")
         
-        if self.semantic_chunking.target_chunk_size > self.semantic_chunking.max_chunk_size:
-            issues.append("❌ target_chunk_size must be less than max_chunk_size")
-        
-        # Validate quality threshold (clustering_threshold is no longer used)
-        if not 0 < self.semantic_chunking.quality_threshold < 1:
+        # Validate quality threshold
+        if not 0 < self.text_splitter.quality_threshold < 1:
             issues.append("❌ quality_threshold must be between 0 and 1")
-        
-        # Validate batch processing settings
-        if self.batch_processing.default_batch_size < 1:
-            issues.append("❌ default_batch_size must be at least 1")
-        
-        if self.batch_processing.max_batch_size > 20:
-            issues.append("⚠️ max_batch_size > 20 may cause memory issues")
-        
-        if self.batch_processing.vector_processing_batch_size > 100:
-            issues.append("⚠️ vector_processing_batch_size > 100 may cause memory issues")
         
         # Check working directory
         if not Path(self.processing.working_directory).exists():
@@ -337,11 +284,11 @@ class PipelineConfig:
                 'min_text_length': self.data_ingestion.min_text_length
             },
             'text_chunking': {
-                'splitter_type': self.semantic_chunking.splitter_type,
-                'target_chunk_size_chars': self.semantic_chunking.target_chunk_size * 4,
-                'overlap_size_chars': self.semantic_chunking.overlap_size * 4,
-                'quality_threshold': self.semantic_chunking.quality_threshold,
-                'legacy_model': self.semantic_chunking.model_name  # For reference only
+                'splitter_type': 'RecursiveCharacterTextSplitter',
+                'chunk_size_chars': self.text_splitter.chunk_size_chars,
+                'overlap_chars': self.text_splitter.overlap_chars,
+                'min_chunk_size_chars': self.text_splitter.min_chunk_size_chars,
+                'quality_threshold': self.text_splitter.quality_threshold
             },
             'batch_processing': {
                 'enabled': self.batch_processing.enable_batch_processing,
@@ -373,21 +320,6 @@ class PipelineConfig:
                 'performance_metrics': self.monitoring.log_performance_metrics
             }
         }
-    
-    def update_from_dict(self, updates: Dict[str, Any]) -> None:
-        """Update configuration from dictionary."""
-        for section, data in updates.items():
-            if hasattr(self, section):
-                config_obj = getattr(self, section)
-                for key, value in data.items():
-                    if hasattr(config_obj, key):
-                        setattr(config_obj, key, value)
-                        logger.info(f"Updated {section}.{key} = {value}")
-                    else:
-                        logger.warning(f"Unknown config key: {section}.{key}")
-            else:
-                logger.warning(f"Unknown config section: {section}")
-
 
 def create_default_config_file(config_path: str = "config.json") -> None:
     """Create a default configuration file."""
@@ -458,16 +390,26 @@ def set_config(config: PipelineConfig) -> None:
 
 
 if __name__ == "__main__":
-    # CLI for configuration management
-    import argparse
-    
+    """CLI for configuration management. This typically is not used
+    in the data ingestion scripts but can be used to check configuration
+    settings quickly in the command line"""
+
     parser = argparse.ArgumentParser(description="Legal Document Pipeline Configuration")
+    
+    # creates config with defaults. You usually want to use this to
+    # generate a new JSON when you change the defaults of the pipeline
     parser.add_argument('--create-default', action='store_true',
                        help='Create default configuration file')
+    
+    # if you pass in a config file JSON
     parser.add_argument('--config-file', default='config.json',
                        help='Configuration file path')
+    
+    # validate a configuration that you want to pass in
     parser.add_argument('--validate', action='store_true',
                        help='Validate configuration')
+    
+    # check the configuration summary
     parser.add_argument('--summary', action='store_true',
                        help='Show configuration summary')
     
