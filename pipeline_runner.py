@@ -449,7 +449,6 @@ def main():
     parser.add_argument('--status', action='store_true', help='Show pipeline status and exit')
     parser.add_argument('--court', help='Court identifier (e.g., scotus, ca1)')
     parser.add_argument('--num-dockets', type=int, help='Number of dockets to process')
-    parser.add_argument('--batch-size', type=int, help='Process dockets in batches of this size')
 
     args = parser.parse_args()
 
@@ -462,8 +461,6 @@ def main():
         config.data_ingestion.court = args.court
     if args.num_dockets:
         config.data_ingestion.num_dockets = args.num_dockets
-    if args.batch_size:
-        config.batch_processing.batch_size = args.batch_size
 
     # Initialize pipeline
     pipeline = LegalDocumentPipeline(config=config)

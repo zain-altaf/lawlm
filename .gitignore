@@ -35,9 +35,6 @@ data/semantic_chunks.json
 data/pipeline_summary.json
 data/incremental_pipeline_summary.json
 data/progress_*.json
-data/batch_*.json
-data/batch_processing/batch_*.json
-data/batch_processing/final_*.json
 
 # Qdrant local storage
 qdrant_storage/

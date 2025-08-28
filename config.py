@@ -50,25 +50,6 @@ class TextSplitterConfig:
     separators: Optional[List[str]] = None  # Will use legal-optimized defaults if None
 
 
-@dataclass
-class BatchProcessingConfig:
-    """Configuration for batch processing operations."""
-    enable_batch_processing: bool = True
-    default_batch_size: int = 5
-    max_batch_size: int = 10
-    vector_processing_batch_size: int = 50
-    checkpoint_interval: int = 100
-    save_intermediate_batches: bool = True
-    cleanup_batch_files: bool = True
-    resume_failed_batches: bool = True
-    max_concurrent_batches: int = 1
-    
-    def __post_init__(self):
-        # Validate batch sizes
-        if self.default_batch_size > self.max_batch_size:
-            logger.warning(f"default_batch_size ({self.default_batch_size}) > max_batch_size ({self.max_batch_size}), adjusting")
-            self.default_batch_size = self.max_batch_size
-
 
 @dataclass
 class VectorProcessingConfig:
@@ -168,7 +149,6 @@ class PipelineConfig:
         # Initialize all component configurations
         self.data_ingestion = DataIngestionConfig()
         self.text_splitter = TextSplitterConfig()
-        self.batch_processing = BatchProcessingConfig()
         self.vector_processing = VectorProcessingConfig()
         self.qdrant = QdrantConfig()
         self.processing = ProcessingConfig()
@@ -211,7 +191,6 @@ class PipelineConfig:
             config_data = {
                 'data_ingestion': asdict(self.data_ingestion),
                 'text_splitter': asdict(self.text_splitter),
-                'batch_processing': asdict(self.batch_processing),
                 'vector_processing': asdict(self.vector_processing),
                 'qdrant': asdict(self.qdrant),
                 'processing': asdict(self.processing),
@@ -253,16 +232,6 @@ class PipelineConfig:
         # Validate quality threshold
         if not 0 < self.text_splitter.quality_threshold < 1:
             issues.append("❌ quality_threshold must be between 0 and 1")
-        
-        # Validate batch processing settings
-        if self.batch_processing.default_batch_size < 1:
-            issues.append("❌ default_batch_size must be at least 1")
-        
-        if self.batch_processing.max_batch_size > 20:
-            issues.append("⚠️ max_batch_size > 20 may cause memory issues")
-        
-        if self.batch_processing.vector_processing_batch_size > 100:
-            issues.append("⚠️ vector_processing_batch_size > 100 may cause memory issues")
         
         # Check working directory
         if not Path(self.processing.working_directory).exists():

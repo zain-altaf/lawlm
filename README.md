@@ -112,8 +112,8 @@ cp .env.template .env
 # Data will be stored permanently in Qdrant Cloud with automatic duplicate detection
 python pipeline_runner.py --court scotus --num-dockets 5
 
-# Process with batch processing (recommended for larger datasets)
-python pipeline_runner.py --court scotus --num-dockets 20 --batch-size 5
+# Process larger dataset
+python pipeline_runner.py --court scotus --num-dockets 20
 
 # Check pipeline status
 python pipeline_runner.py --status
@@ -193,7 +193,6 @@ python config.py --summary
 #### Data Ingestion
 - `--court`: Court identifier (default: scotus)
 - `--num-dockets`: Number of dockets to fetch (default: 5)
-- `--batch-size`: Enable batch processing with specified size
 
 #### Processing Options
 - `--working-dir`: Working directory for files (default: data)
@@ -239,13 +238,13 @@ python pipeline_runner.py --court scotus --num-dockets 5 --chunk-size 512
 ### Batch Processing (Recommended)
 ```bash
 # Process 50 cases in batches of 10
-python pipeline_runner.py --court scotus --num-dockets 50 --batch-size 10
+python pipeline_runner.py --court scotus --num-dockets 50
 
 # Resume interrupted job
 python pipeline_runner.py --resume --job-id scotus_50dockets_20250805_123456
 
 # Custom batch settings
-python pipeline_runner.py --court ca9 --num-dockets 30 --batch-size 5 --job-id my_ca9_job
+python pipeline_runner.py --court ca9 --num-dockets 30
 ```
 
 ### Individual Components
@@ -307,8 +306,6 @@ python config.py --summary
 
 ### Batch Processing
 - `enable_batch_processing`: Enable batch mode (default: true)
-- `default_batch_size`: Default batch size (default: 5)
-- `max_batch_size`: Maximum allowed batch size (default: 10)
 - `checkpoint_interval`: Progress logging frequency (default: 100)
 
 ## 🐛 Troubleshooting
@@ -318,7 +315,7 @@ python config.py --summary
 #### Memory Issues
 ```bash
 # Reduce batch sizes
-python pipeline_runner.py --batch-size 3
+python pipeline_runner.py --court scotus --num-dockets 10
 
 # Monitor memory usage
 python monitor.py --memory
@@ -327,7 +324,7 @@ python monitor.py --memory
 #### API Rate Limits
 ```bash
 # Use smaller batch sizes and add delays
-python pipeline_runner.py --batch-size 2
+python pipeline_runner.py --court scotus --num-dockets 5
 ```
 
 #### Qdrant Connection Issues
