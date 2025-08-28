@@ -18,6 +18,9 @@ import argparse
 import json
 import re
 import uuid
+import requests
+import os
+from dotenv import load_dotenv
 
 # Import our processing modules
 from fetch_and_process import process_docket
@@ -71,7 +74,7 @@ class LegalDocumentPipeline:
         """
         Run the legal document processing pipeline.
         Process each docket completely before moving to next (incremental processing).
-        Includes proper pagination and deduplication.
+        Includes smart pagination and deduplication.
         """
         logger.info(f"🚀 Starting legal document processing pipeline")
         logger.info(f"🏛️ Court: {self.config.data_ingestion.court}, Dockets: {self.config.data_ingestion.num_dockets}")
@@ -95,7 +98,7 @@ class LegalDocumentPipeline:
             separators=["\n\n\n", "\n\n", "\n", ". ", "; ", ", ", " ", ""]
         )
         
-        # Get existing dockets to avoid reprocessing
+        # Get all unique dockets in Qdrant
         existing_dockets = set()
         if vector_processor:
             existing_dockets = vector_processor.get_existing_docket_numbers()
@@ -247,51 +250,47 @@ class LegalDocumentPipeline:
 
     def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
         """
-        Fetch dockets with cursor-based pagination that continues fetching until we have enough NEW dockets.
-        Uses CourtListener's cursor pagination for proper sequential access.
+        Fetch dockets using linear pagination, checking each docket against existing ones.
+        More reliable than calculated page skipping since API ordering may not be guaranteed.
         """
-        import requests
-        import os
-        from dotenv import load_dotenv
         
         load_dotenv()
         CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
         HEADERS = {'Authorization': f'Token {CASELAW_API_KEY}'} if CASELAW_API_KEY else {}
         
-        all_dockets = []
         new_dockets = []
-        next_url = None
         page_count = 0
-        max_page_size = 200  # API limit
+        page_size = 200  # Use larger page size to reduce API calls
         consecutive_empty_pages = 0
-        max_consecutive_empty = 10  # Stop after 10 consecutive pages with no new dockets
+        max_consecutive_empty = 50  # Keep going until we find unprocessed older dockets
 
-        logger.info(f"🌐 Cursor-based pagination: fetching until we have {num_dockets} NEW dockets...")
-        logger.info(f"🔍 Checking against {len(existing_dockets)} existing dockets")
+        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (oldest first)...")
+        logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
         
-        # Initial request
         base_url = "https://www.courtlistener.com/api/rest/v4/dockets/"
+        
+        # Start with cursor-based pagination to access older dockets
+        cursor = None
         
         while len(new_dockets) < num_dockets:
             page_count += 1
             
-            logger.info(f"📄 Fetching page {page_count} (cursor-based) - need {num_dockets - len(new_dockets)} more NEW dockets")
+            logger.info(f"📄 Fetching page {page_count} - need {num_dockets - len(new_dockets)} more NEW dockets")
             
             try:
-                # Use next_url if available, otherwise start with base parameters
-                if next_url:
-                    response = requests.get(next_url, headers=HEADERS, timeout=30)
-                else:
-                    response = requests.get(
-                        base_url,
-                        params={
-                            "court": court, 
-                            "page_size": max_page_size,
-                            "ordering": "id"  # Consistent ordering for cursor pagination
-                        },
-                        headers=HEADERS,
-                        timeout=30
-                    )
+                params = {
+                    "court": court,
+                    "ordering": "id"  # Oldest dockets first (to access unprocessed historical data)
+                }
+                if cursor:
+                    params["cursor"] = cursor
+                
+                response = requests.get(
+                    base_url,
+                    params=params,
+                    headers=HEADERS,
+                    timeout=30
+                )
                 response.raise_for_status()
                 
                 response_data = response.json()
@@ -300,7 +299,15 @@ class LegalDocumentPipeline:
                     logger.warning(f"⚠️ No more dockets available from API")
                     break
                 
-                all_dockets.extend(page_dockets)
+                # Get next cursor for continuation
+                next_url = response_data.get('next')
+                if next_url:
+                    import urllib.parse
+                    parsed = urllib.parse.urlparse(next_url)
+                    query_params = urllib.parse.parse_qs(parsed.query)
+                    cursor = query_params.get('cursor', [None])[0]
+                else:
+                    cursor = None
                 
                 # Check this page for new dockets
                 page_new_count = 0
@@ -314,12 +321,12 @@ class LegalDocumentPipeline:
                         if len(new_dockets) >= num_dockets:
                             break
                 
-                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total dockets, {page_new_count} new (total new: {len(new_dockets)})")
+                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (total new: {len(new_dockets)})")
                 
                 # Track consecutive empty pages
                 if page_new_count == 0:
                     consecutive_empty_pages += 1
-                    logger.info(f"⚠️ Page {page_count} had no new dockets ({consecutive_empty_pages}/{max_consecutive_empty} consecutive empty pages)")
+                    logger.info(f"⚠️ Page {page_count} had no new dockets ({consecutive_empty_pages}/{max_consecutive_empty})")
                     
                     if consecutive_empty_pages >= max_consecutive_empty:
                         logger.warning(f"🛑 Stopping: {max_consecutive_empty} consecutive pages with no new dockets")
@@ -332,10 +339,9 @@ class LegalDocumentPipeline:
                     logger.info(f"✅ Found enough new dockets: {len(new_dockets)}")
                     break
                 
-                # Get next page URL for cursor pagination
-                next_url = response_data.get('next')
-                if not next_url:
-                    logger.info(f"📋 No more pages available - reached end of API")
+                # Check if we've reached the end of available data
+                if not cursor:
+                    logger.info(f"📋 Reached end of available dockets (no more pages)")
                     break
                 
             except requests.RequestException as e:
@@ -345,10 +351,8 @@ class LegalDocumentPipeline:
         final_new_dockets = new_dockets[:num_dockets]  # Limit to exactly what was requested
         
         logger.info(f"🎯 Cursor-based pagination complete:")
-        logger.info(f"   📄 Total pages fetched: {page_count}")
-        logger.info(f"   📊 Total dockets seen: {len(all_dockets)}")
+        logger.info(f"   📄 Pages fetched: {page_count}")
         logger.info(f"   ✨ New dockets found: {len(final_new_dockets)}")
-        logger.info(f"   ⏭️ Existing dockets skipped: {len(all_dockets) - len(final_new_dockets)}")
         
         return final_new_dockets
 

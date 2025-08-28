@@ -124,20 +124,11 @@ python pipeline_runner.py --status
 The pipeline automatically detects and skips duplicate documents to prevent waste of storage:
 
 ```bash
-# Default behavior - skip duplicates by document ID
+# Default behavior - automatically skips already-processed dockets using smart pagination
 python pipeline_runner.py --court scotus --num-dockets 10
 
-# Skip duplicates by docket number (broader deduplication)
-python pipeline_runner.py --court scotus --num-dockets 10 --duplicate-check-mode docket_number
-
-# Skip duplicates by both document ID AND docket number
-python pipeline_runner.py --court scotus --num-dockets 10 --duplicate-check-mode both
-
-# Disable duplicate detection (may create duplicates)
-python pipeline_runner.py --court scotus --num-dockets 10 --no-skip-duplicates
-
-# Overwrite existing collection (WARNING: destroys existing data)
-python pipeline_runner.py --court scotus --num-dockets 10 --overwrite-collection
+# Process larger dataset from same court
+python pipeline_runner.py --court scotus --num-dockets 50
 ```
 
 ### 🔄 Migrating from Local to Cloud

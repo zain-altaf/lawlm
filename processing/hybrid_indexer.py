@@ -104,6 +104,7 @@ class EnhancedVectorProcessor:
         # Initialize Qdrant client
         self.client = self._get_qdrant_client()
     
+    
     def _get_qdrant_client(self) -> QdrantClient:
         """Initialize and return Qdrant client with cloud support."""
         try:
@@ -135,6 +136,7 @@ class EnhancedVectorProcessor:
                 logger.error("Cloud URL detected but no QDRANT_API_KEY provided. Set your API key.")
             raise
     
+
     def _create_enhanced_text(self, chunk: Dict[str, Any]) -> str:
         """Create enhanced text representation for better embeddings."""
         text = chunk.get('text', '')
@@ -171,6 +173,7 @@ class EnhancedVectorProcessor:
         
         return enhanced_text
     
+
     def get_existing_document_ids(self) -> set:
         """Get set of existing document IDs in the collection."""
         try:
@@ -208,6 +211,7 @@ class EnhancedVectorProcessor:
             logger.warning(f"Could not get existing document IDs: {e}")
             return set()
     
+
     def get_existing_docket_numbers(self) -> set:
         """Get set of existing docket numbers in the collection."""
         try:
