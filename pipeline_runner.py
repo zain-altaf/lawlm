@@ -174,8 +174,8 @@ class LegalDocumentPipeline:
 
                         raw_chunks = text_splitter.split_text(opinion_text)
                         
-                        # Clean up chunk boundaries to ensure complete sentences
-                        text_chunks = self._clean_chunk_boundaries(raw_chunks)
+                        # Clean up chunk boundaries and fix overlaps to ensure complete sentences
+                        text_chunks = self._fix_chunk_overlaps(raw_chunks)
                         
                         for chunk_idx, chunk_text in enumerate(text_chunks):
                             if len(chunk_text.strip()) < self.config.text_splitter.min_chunk_size_chars:
@@ -369,30 +369,115 @@ class LegalDocumentPipeline:
         
         return final_new_dockets
 
-    def _clean_chunk_boundaries(self, chunks: List[str]) -> List[str]:
+    def _fix_chunk_overlaps(self, chunks: List[str]) -> List[str]:
         """
-        Light cleanup of chunk boundaries to fix any remaining edge cases.
-        With better separators, this should be minimal.
+        Fix chunk overlaps to ensure they start and end at proper sentence boundaries.
+        This addresses the issue where RecursiveCharacterTextSplitter's character-based
+        overlap creates fragments like 'Moreover, the plaintiffs' contention...'
         """
         if not chunks:
             return chunks
         
-        cleaned_chunks = []
+        fixed_chunks = []
         
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             chunk = chunk.strip()
-            if not chunk or len(chunk) < 50:  # Skip very short chunks
+            if not chunk or len(chunk) < 50:
                 continue
-                
-            # Light cleanup: remove leading punctuation fragments
-            while chunk and chunk.startswith(('. ', ', ', '; ', ': ')):
-                chunk = chunk[2:].strip()
-                
-            # Ensure minimum quality
-            if chunk and len(chunk.strip()) > 50:
-                cleaned_chunks.append(chunk)
+            
+            # Clean up the beginning: remove leading sentence fragments
+            chunk = self._fix_chunk_start(chunk)
+            
+            # Clean up the end: ensure complete sentences
+            chunk = self._fix_chunk_end(chunk)
+            
+            # Only keep chunks that meet quality thresholds
+            if chunk and len(chunk.strip()) >= self.config.text_splitter.min_chunk_size_chars:
+                fixed_chunks.append(chunk)
         
-        return cleaned_chunks
+        return fixed_chunks
+    
+    def _fix_chunk_start(self, chunk: str) -> str:
+        """Fix the start of a chunk to begin at a proper sentence boundary."""
+        if not chunk:
+            return chunk
+            
+        # If it already starts well, keep it
+        if self._starts_at_sentence_boundary(chunk):
+            return chunk
+            
+        # Find the first proper sentence start
+        import re
+        
+        # Look for sentence patterns: '. [A-Z]', '? [A-Z]', '! [A-Z]', or start of paragraph
+        patterns = [
+            r'[.!?]\s+[A-Z]',  # Sentence ending + capital letter
+            r'\n\s*[A-Z]',     # Paragraph start
+            r'^[A-Z]'          # Already starts with capital (fallback)
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, chunk)
+            if match:
+                # Start from the capital letter
+                start_pos = match.end() - 1
+                return chunk[start_pos:].strip()
+        
+        # If no good boundary found, return as-is (better than losing content)
+        return chunk
+    
+    def _fix_chunk_end(self, chunk: str) -> str:
+        """Fix the end of a chunk to end at a complete sentence."""
+        if not chunk:
+            return chunk
+            
+        chunk = chunk.rstrip()
+        
+        # If already ends at sentence boundary, keep it
+        if chunk.endswith(('.', '!', '?')):
+            return chunk
+        
+        # Find the last complete sentence
+        import re
+        
+        # Look for the last sentence-ending punctuation
+        sentence_endings = list(re.finditer(r'[.!?]', chunk))
+        
+        if sentence_endings:
+            last_sentence = sentence_endings[-1]
+            # Keep text up to and including the sentence ending
+            return chunk[:last_sentence.end()].rstrip()
+        
+        # If no sentence endings found, look for other natural breakpoints
+        for punct in [';', ':']:
+            last_punct = chunk.rfind(punct)
+            if last_punct > len(chunk) * 0.8:  # Only if near the end
+                return chunk[:last_punct + 1].rstrip()
+        
+        # As fallback, return as-is
+        return chunk
+    
+    def _starts_at_sentence_boundary(self, text: str) -> bool:
+        """Check if text starts at a natural sentence boundary."""
+        if not text:
+            return False
+            
+        # Bad starts (sentence fragments) - check these first!
+        if text.startswith(('.', ',', ';', ':')):
+            return False
+        if text.startswith(('moreover,', 'however,', 'furthermore,', 'additionally,')):
+            return False
+            
+        # Good starts
+        first_char = text[0]
+        if first_char.isupper():
+            return True
+        if text.startswith(('(', '[', '"', "'")):
+            return True
+        if text.startswith(('a ', 'an ', 'the ', 'and ', 'or ', 'but ')):
+            return True
+            
+        return False
     
     def _fetch_docket_documents(self, docket: Dict[str, Any], court: str) -> List[Dict[str, Any]]:
         """Fetch and process documents for a specific docket object."""
