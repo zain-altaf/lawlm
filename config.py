@@ -172,8 +172,8 @@ class PipelineConfig:
         self.qdrant = QdrantConfig()
         self.processing = ProcessingConfig()
         self.monitoring = MonitoringConfig()
-        
-        # Load from file if provided
+
+        # Load from file if provided (this is a JSON that you need to provide)
         if config_file and Path(config_file).exists():
             self.load_from_file(config_file)
         
@@ -350,21 +350,6 @@ class PipelineConfig:
                 'performance_metrics': self.monitoring.log_performance_metrics
             }
         }
-    
-    def update_from_dict(self, updates: Dict[str, Any]) -> None:
-        """Update configuration from dictionary."""
-        for section, data in updates.items():
-            if hasattr(self, section):
-                config_obj = getattr(self, section)
-                for key, value in data.items():
-                    if hasattr(config_obj, key):
-                        setattr(config_obj, key, value)
-                        logger.info(f"Updated {section}.{key} = {value}")
-                    else:
-                        logger.warning(f"Unknown config key: {section}.{key}")
-            else:
-                logger.warning(f"Unknown config section: {section}")
-
 
 def create_default_config_file(config_path: str = "config.json") -> None:
     """Create a default configuration file."""
