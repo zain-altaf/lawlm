@@ -86,8 +86,8 @@ class LegalDocumentPipeline:
             if not chunks_path.exists():
                 # Create LangChain splitter optimized for legal documents with paragraph preservation
                 text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=self.config.semantic_chunking.target_chunk_size * 4,  # Convert tokens to chars
-                    chunk_overlap=self.config.semantic_chunking.overlap_size * 4,
+                    chunk_size=self.config.text_splitter.chunk_size_chars,
+                    chunk_overlap=self.config.text_splitter.overlap_chars,
                     length_function=len,
                     separators=[
                         "\n\n\n",  # Major section breaks
@@ -102,8 +102,8 @@ class LegalDocumentPipeline:
                 )
 
                 logger.info(f"🔪 Chunking {len(docs)} documents with LangChain RecursiveCharacterTextSplitter")
-                logger.info(f"   Chunk size: {self.config.semantic_chunking.target_chunk_size * 4} chars")
-                logger.info(f"   Overlap: {self.config.semantic_chunking.overlap_size * 4} chars")
+                logger.info(f"   Chunk size: {self.config.text_splitter.chunk_size_chars} chars")
+                logger.info(f"   Overlap: {self.config.text_splitter.overlap_chars} chars")
                 logger.info(f"   Prioritizing paragraph preservation")
 
                 all_chunks = []
@@ -117,7 +117,7 @@ class LegalDocumentPipeline:
 
                     # Convert to our chunk format with metadata
                     for chunk_idx, chunk_text in enumerate(text_chunks):
-                        if len(chunk_text.strip()) < self.config.semantic_chunking.min_chunk_size * 4:
+                        if len(chunk_text.strip()) < self.config.text_splitter.min_chunk_size_chars:
                             continue
 
                         chunk = {
@@ -219,8 +219,8 @@ class LegalDocumentPipeline:
 
         # Initialize text splitter
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.config.semantic_chunking.target_chunk_size * 4,
-            chunk_overlap=self.config.semantic_chunking.overlap_size * 4,
+            chunk_size=self.config.text_splitter.chunk_size_chars,
+            chunk_overlap=self.config.text_splitter.overlap_chars,
             length_function=len,
             separators=["\n\n\n", "\n\n", "\n", ". ", "; ", ", ", " ", ""]
         )
@@ -292,7 +292,7 @@ class LegalDocumentPipeline:
                         text_chunks = text_splitter.split_text(opinion_text)
                         
                         for chunk_idx, chunk_text in enumerate(text_chunks):
-                            if len(chunk_text.strip()) < self.config.semantic_chunking.min_chunk_size * 4:
+                            if len(chunk_text.strip()) < self.config.text_splitter.min_chunk_size_chars:
                                 continue
 
                             chunk = {

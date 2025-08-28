@@ -40,33 +40,13 @@ class DataIngestionConfig:
 
 
 @dataclass
-class SemanticChunkingConfig:
-    """Configuration for text chunking (now using RecursiveCharacterTextSplitter)."""
-    # Note: Kept class name for backward compatibility, but now uses character-based splitting
-    splitter_type: str = "RecursiveCharacterTextSplitter"
-    target_chunk_size: int = 384  # Will be converted to characters (~4x for char count)
-    overlap_size: int = 75        # Will be converted to characters (~4x for char count)
-    min_chunk_size: int = 100     # Will be converted to characters (~4x for char count)
-    max_chunk_size: int = 512     # Legacy parameter, kept for compatibility
-    
-    # Legacy parameters (kept for backward compatibility but not used)
-    model_name: str = "nlpaueb/legal-bert-base-uncased"  # Not used anymore
-    clustering_threshold: float = 0.25                   # Not used anymore
-    min_cluster_size: int = 2                           # Not used anymore
-    device: str = "auto"                                # Not used anymore
-    
-    # Active parameters for RecursiveCharacterTextSplitter
-    quality_threshold: float = 0.3
-    separators: Optional[List[str]] = None  # Will use legal-optimized defaults
-    
-    def __post_init__(self):
-        # Legacy device setting (kept for compatibility)
-        if self.device == "auto":
-            try:
-                import torch
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                self.device = "cpu"
+class TextSplitterConfig:
+    """Configuration for RecursiveCharacterTextSplitter."""
+    chunk_size_chars: int = 1536        # Character count for chunks (was 384 tokens * 4)
+    overlap_chars: int = 300            # Character overlap between chunks (was 75 tokens * 4)
+    min_chunk_size_chars: int = 400     # Minimum chunk size in characters (was 100 tokens * 4)
+    quality_threshold: float = 0.3      # Quality threshold for chunks
+    separators: Optional[List[str]] = None  # Will use legal-optimized defaults if None
 
 
 @dataclass
@@ -186,7 +166,7 @@ class PipelineConfig:
         """
         # Initialize all component configurations
         self.data_ingestion = DataIngestionConfig()
-        self.semantic_chunking = SemanticChunkingConfig()
+        self.text_splitter = TextSplitterConfig()
         self.batch_processing = BatchProcessingConfig()
         self.vector_processing = VectorProcessingConfig()
         self.qdrant = QdrantConfig()
@@ -229,7 +209,7 @@ class PipelineConfig:
         try:
             config_data = {
                 'data_ingestion': asdict(self.data_ingestion),
-                'semantic_chunking': asdict(self.semantic_chunking),
+                'text_splitter': asdict(self.text_splitter),
                 'batch_processing': asdict(self.batch_processing),
                 'vector_processing': asdict(self.vector_processing),
                 'qdrant': asdict(self.qdrant),
@@ -265,15 +245,12 @@ class PipelineConfig:
         if not self.data_ingestion.api_key:
             issues.append("❌ CASELAW_API_KEY is required for data ingestion")
         
-        # Validate chunk sizes (note: now in characters after 4x conversion)
-        if self.semantic_chunking.min_chunk_size >= self.semantic_chunking.target_chunk_size:
-            issues.append("❌ min_chunk_size must be less than target_chunk_size")
+        # Validate chunk sizes
+        if self.text_splitter.min_chunk_size_chars >= self.text_splitter.chunk_size_chars:
+            issues.append("❌ min_chunk_size_chars must be less than chunk_size_chars")
         
-        if self.semantic_chunking.target_chunk_size > self.semantic_chunking.max_chunk_size:
-            issues.append("❌ target_chunk_size must be less than max_chunk_size")
-        
-        # Validate quality threshold (clustering_threshold is no longer used)
-        if not 0 < self.semantic_chunking.quality_threshold < 1:
+        # Validate quality threshold
+        if not 0 < self.text_splitter.quality_threshold < 1:
             issues.append("❌ quality_threshold must be between 0 and 1")
         
         # Validate batch processing settings
@@ -337,11 +314,11 @@ class PipelineConfig:
                 'min_text_length': self.data_ingestion.min_text_length
             },
             'text_chunking': {
-                'splitter_type': self.semantic_chunking.splitter_type,
-                'target_chunk_size_chars': self.semantic_chunking.target_chunk_size * 4,
-                'overlap_size_chars': self.semantic_chunking.overlap_size * 4,
-                'quality_threshold': self.semantic_chunking.quality_threshold,
-                'legacy_model': self.semantic_chunking.model_name  # For reference only
+                'splitter_type': 'RecursiveCharacterTextSplitter',
+                'chunk_size_chars': self.text_splitter.chunk_size_chars,
+                'overlap_chars': self.text_splitter.overlap_chars,
+                'min_chunk_size_chars': self.text_splitter.min_chunk_size_chars,
+                'quality_threshold': self.text_splitter.quality_threshold
             },
             'batch_processing': {
                 'enabled': self.batch_processing.enable_batch_processing,
