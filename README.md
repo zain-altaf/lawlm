@@ -1,59 +1,47 @@
 # Legal Document Processing Pipeline
 
-A robust, production-ready pipeline for processing legal documents from CourtListener API with semantic chunking and vector search capabilities. Designed for efficient ingestion, intelligent chunking, and scalable vector indexing of legal case data with **persistent cloud storage**.
+A robust legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant for semantic search. The system uses Legal BERT for understanding legal text and BGE embeddings for vector representations.
 
 ## 🎯 Overview
 
-This pipeline focuses on the core functionality of **correctly ingesting, chunking, and pushing data** for legal document search with **permanent cloud storage**. It provides:
+This pipeline provides core functionality for legal document processing and retrieval:
 
-- **Smart Data Ingestion**: Batch processing from CourtListener API with resume capability
-- **Semantic Chunking**: Legal BERT-powered intelligent text segmentation
-- **Vector Processing**: BGE embeddings optimized for legal domain
-- **Persistent Cloud Storage**: Qdrant Cloud integration with 1GB free tier
-- **Batch Processing**: Robust handling of large document collections
-- **Resource Optimization**: Memory-efficient processing with configurable limits
-- **Cloud Migration Tools**: Easy migration from local to cloud storage
+- **Data Ingestion**: Fetches legal cases from CourtListener API with batch processing support
+- **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with enhanced boundary handling
+- **Vector Processing**: Creates embeddings using BGE models (BAAI/bge-small-en-v1.5)
+- **Storage**: Qdrant vector database (local or cloud) with hybrid search capabilities
+- **Query Interface**: RAG-based legal document retrieval system
+- **Incremental Processing**: Memory-efficient processing that prevents memory buildup
 
 ## 🏗️ Architecture
 
 ```
-CourtListener API → Data Ingestion → Semantic Chunking → Vector Processing → Qdrant Cloud (Persistent)
+CourtListener API → Data Ingestion → Text Chunking → Vector Processing → Qdrant Storage
 ```
 
-### Pipeline Steps:
+### Pipeline Flow:
 1. **Data Ingestion**: Fetch legal documents from CourtListener API
-2. **Semantic Chunking**: Break documents into coherent chunks using Legal BERT
+2. **Text Chunking**: Break documents into coherent chunks using RecursiveCharacterTextSplitter
 3. **Vector Processing**: Create semantic embeddings using BGE models
-4. **Persistent Storage**: Store vectors in Qdrant Cloud for permanent access
-
-### ☁️ Cloud-First Design:
-- **No Repeated API Calls**: Data persisted in Qdrant Cloud eliminates need to repeatedly fetch from CourtListener
-- **Always Available**: Access your legal document database from anywhere
-- **Free Tier**: 1GB permanent storage with no credit card required
-- **Auto-Scaling**: Easy upgrade path when you need more capacity
+4. **Storage**: Store vectors in Qdrant vector database with hybrid search capabilities
 
 ## 📁 File Structure
 
 ```
 lawlm/
 ├── README.md                   # Main documentation
+├── CLAUDE.md                   # Project instructions for Claude Code
 ├── requirements.txt            # Python dependencies
-├── .env.template              # Environment variable template
 ├── pipeline_runner.py          # Main pipeline orchestrator
-├── config.py                  # Configuration management with cloud support
-├── migrate_to_cloud.py        # Cloud migration utility
-├── monitor.py                 # System monitoring and health checks
-├── data_ingestion.py          # CourtListener API integration
-├── processing/
-│   ├── __init__.py            # Processing module exports
-│   ├── smart_chunking.py      # Semantic chunking with Legal BERT
-│   └── vector_processor.py    # Vector processing with cloud support
-├── web-interface/             # Next.js search interface
-│   ├── src/                   # Source code
-│   ├── package.json           # Web dependencies
-│   └── README.md              # Web interface documentation
+├── config.py                  # Configuration management
+├── fetch_and_process.py        # CourtListener API integration
+├── hybrid_indexer.py           # Creates hybrid (vector + keyword) search indexes
+├── legal_rag_query.py          # RAG system for querying the vector database
+├── get_unique_dockets.py       # Utility for managing dockets
+├── validate_missing_dockets.py # Validation utilities
+├── manage_qdrant.sh           # Qdrant management script
 ├── data/                      # Working directory for pipeline files
-├── qdrant_storage/           # Local Qdrant storage (for migration)
+├── qdrant_storage/           # Local Qdrant storage
 ```
 
 ## 🚀 Quick Start
@@ -62,7 +50,7 @@ lawlm/
 
 1. **Python 3.8+** with pip
 2. **CourtListener API key** ([get one here](https://www.courtlistener.com/api/))
-3. **Qdrant Cloud account** ([sign up here](https://cloud.qdrant.io/)) - **Free tier with 1GB storage**
+3. **Qdrant** (local or cloud deployment)
 
 ### Installation
 
@@ -76,102 +64,64 @@ pip install -r requirements.txt
 
 # Set up environment variables
 cp .env.template .env
-# Edit .env with your API keys (see Cloud Setup section below)
+# Edit .env with your API keys
 ```
 
-### ☁️ Cloud Setup (Recommended)
+### Environment Configuration
 
-1. **Get CourtListener API Key**:
-   - Sign up at [https://www.courtlistener.com/api/](https://www.courtlistener.com/api/)
-   - Get your free API key
+Configure your `.env` file with the required credentials:
 
-2. **Set up Qdrant Cloud**:
-   - Sign up at [https://cloud.qdrant.io/](https://cloud.qdrant.io/)
-   - Create a free cluster (1GB storage, no credit card needed)
-   - Note your cluster URL and API key
-
-3. **Configure Environment**:
-   ```bash
-   # Edit .env file with your credentials
-   CASELAW_API_KEY=your_courtlistener_api_key_here
-   QDRANT_URL=https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333
-   QDRANT_API_KEY=your_qdrant_api_key_here
-   QDRANT_CLUSTER_NAME=your_cluster_name
-   ```
-
-4. **Verify Setup**:
-   ```bash
-   # Test configuration
-   python config.py --validate
-   ```
+```bash
+# Required
+CASELAW_API_KEY=your_courtlistener_api_key_here
+QDRANT_URL=your_qdrant_url_here
+QDRANT_API_KEY=your_qdrant_api_key_here  # if using cloud
+```
 
 ### Basic Usage
 
 ```bash
-# Run complete pipeline with defaults (5 Supreme Court cases)
-# Data will be stored permanently in Qdrant Cloud with automatic duplicate detection
+# Run complete pipeline (incremental processing)
 python pipeline_runner.py --court scotus --num-dockets 5
 
 # Process larger dataset
-python pipeline_runner.py --court scotus --num-dockets 20
+python pipeline_runner.py --court scotus --num-dockets 50
 
 # Check pipeline status
 python pipeline_runner.py --status
 ```
 
-### 🔄 Handling Existing Data (Duplicate Detection)
+## 📋 Commands
 
-The pipeline automatically detects and skips duplicate documents to prevent waste of storage:
+### Pipeline Operations
 
 ```bash
-# Default behavior - automatically skips already-processed dockets using smart pagination
-python pipeline_runner.py --court scotus --num-dockets 10
+# Run complete pipeline (ingest, chunk, vectorize) - uses incremental processing
+python pipeline_runner.py --court scotus --num-dockets 5
 
-# Process larger dataset from same court
+# Run with larger dataset
 python pipeline_runner.py --court scotus --num-dockets 50
+
+# Check pipeline status
+python pipeline_runner.py --status
 ```
 
-### 🔄 Migrating from Local to Cloud
-
-If you have existing local Qdrant data, use the migration utility:
+### Individual Components
 
 ```bash
-# List your local collections
-python migrate_to_cloud.py --list-source
+# Data ingestion only
+python fetch_and_process.py --court scotus --num_dockets 5
 
-# List cloud collections (to verify connection)
-python migrate_to_cloud.py --list-target
+# Query the vector database
+python legal_rag_query.py "What are the requirements for due process?"
 
-# Migrate a single collection
-python migrate_to_cloud.py --migrate caselaw-cases
-
-# Migrate all collections
-python migrate_to_cloud.py --migrate-all
-
-# Export collection for backup
-python migrate_to_cloud.py --export caselaw-cases --output backup.json
+# Run hybrid indexing
+python hybrid_indexer.py
 ```
 
-## 📊 Configuration
+### Configuration
 
-The pipeline supports comprehensive configuration through:
-
-### 1. Environment Variables
 ```bash
-# Required
-CASELAW_API_KEY=your_api_key_here
-QDRANT_URL=https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333
-QDRANT_API_KEY=your_qdrant_api_key_here
-
-# Optional
-QDRANT_CLUSTER_NAME=your_cluster_name
-```
-
-### 2. Configuration Files
-```bash
-# Create default configuration
-python config.py --create-default
-
 # Validate configuration
 python config.py --validate
 
@@ -179,291 +129,101 @@ python config.py --validate
 python config.py --summary
 ```
 
-### 3. Command Line Options
+## 📂 Key Files and Their Purposes
 
-#### Data Ingestion
-- `--court`: Court identifier (default: scotus)
-- `--num-dockets`: Number of dockets to fetch (default: 5)
+- **pipeline_runner.py**: Main orchestrator using incremental processing (includes smart pagination and deduplication)
+- **fetch_and_process.py**: Handles data ingestion from CourtListener API and initial processing
+- **legal_rag_query.py**: RAG system for querying the vector database with natural language
+- **config.py**: Central configuration management for all pipeline components
+- **hybrid_indexer.py**: Creates hybrid (vector + keyword) search indexes in Qdrant (includes incremental processing)
+- **get_unique_dockets.py**: Utility for managing and analyzing docket collections
+- **validate_missing_dockets.py**: Validation utilities for data integrity
 
-#### Processing Options
-- `--working-dir`: Working directory for files (default: data)
-- `--chunk-size`: Target chunk size in tokens (default: 384)
-- `--embedding-model`: BGE model for embeddings (default: BAAI/bge-small-en-v1.5)
+## 🔧 Environment Variables
 
-#### Advanced Options
-- `--enable-hybrid`: Enable hybrid search (resource intensive, disabled by default)
-- `--resume`: Resume interrupted batch processing
-- `--job-id`: Custom job identifier for batch processing
+Required in `.env`:
+- `CASELAW_API_KEY`: CourtListener API key
+- `QDRANT_URL`: Qdrant server URL (local or cloud)
+- `QDRANT_API_KEY`: Qdrant API key (for cloud deployments)
 
-## 🔧 Key Features
+## 🔧 Important Implementation Details
 
-### Batch Processing
-- **Smart Division**: Handles non-evenly divisible batch sizes
-- **Resume Capability**: Continue from interruption points
-- **Progress Tracking**: Real-time status and completion metrics
-- **Error Recovery**: Robust handling of failed batches
+1. **Chunking Strategy**: Uses RecursiveCharacterTextSplitter with enhanced separators that prioritize complete paragraphs and sentences. Default chunk size is 1536 characters with 300-character overlap for context continuity.
 
-### Memory Optimization
-- **Lazy Loading**: Components loaded only when needed
-- **Garbage Collection**: Aggressive cleanup during processing
-- **GPU Memory Management**: CUDA memory optimization
-- **Resource Monitoring**: Real-time memory usage tracking
+2. **Text Boundary Handling**: Advanced overlap fixing ensures chunks start and end at natural sentence boundaries, eliminating fragments like ". So, tak" at chunk beginnings.
 
-### Quality Assurance
-- **Chunk Validation**: 6-metric quality assessment
-- **Legal Content Detection**: Ensures legal domain relevance
-- **Input Validation**: Comprehensive parameter checking
-- **Error Handling**: Detailed logging and recovery mechanisms
+3. **Vector Storage**: Supports both local and cloud Qdrant deployments. Cloud recommended for persistence.
 
-## 💡 Usage Examples
+4. **Processing Mode**: Uses incremental processing by default - processes each docket/batch completely (fetch → chunk → vectorize → upload) before moving to the next. Prevents memory buildup and ensures partial results are saved.
 
-### Basic Document Processing
-```bash
-# Process 10 Supreme Court cases
-python pipeline_runner.py --court scotus --num-dockets 10
+5. **Cursor-Based Pagination**: Uses CourtListener API's cursor pagination instead of page numbers, enabling reliable access to 500k+ historical SCOTUS dockets without ordering issues.
 
-# Process with custom chunk size
-python pipeline_runner.py --court scotus --num-dockets 5 --chunk-size 512
-```
+6. **Smart Deduplication**: Automatically detects and skips duplicate documents by docket number, with smart pagination that starts from unprocessed content.
 
-### Batch Processing (Recommended)
-```bash
-# Process 50 cases in batches of 10
-python pipeline_runner.py --court scotus --num-dockets 50
+7. **Error Handling**: Comprehensive error handling with detailed logging. Saves progress after each docket/batch.
 
-# Resume interrupted job
-python pipeline_runner.py --resume --job-id scotus_50dockets_20250805_123456
+8. **Resource Management**: Memory-efficient processing with configurable batch sizes and garbage collection.
 
-# Custom batch settings
-python pipeline_runner.py --court ca9 --num-dockets 30
-```
+## 💡 Common Tasks
 
-### Individual Components
-```bash
-# Data ingestion only
-python data_ingestion.py --court scotus --num_dockets 5
+### Process New Legal Documents
+1. Ensure environment variables are set in `.env`
+2. Run: `python pipeline_runner.py --court <court_id> --num-dockets <number>`
+3. Monitor progress in console output
+4. Query processed documents: `python legal_rag_query.py "<your legal question>"`
 
-# Semantic chunking with custom parameters
-python processing/smart_chunking.py data/raw_cases.json --quality_threshold 0.4
+### Debug Issues
+- Check configuration: `python config.py --validate`
+- Enable debug logging: `export LOG_LEVEL=DEBUG`
+- Check Qdrant connection: `curl http://localhost:6333/health` (or cloud URL)
 
-# Vector processing
-python processing/vector_processor.py data/chunks.json
+### Handle Large Datasets
+- Uses incremental processing by default (memory efficient)
+- All processing is handled automatically with smart pagination
 
-# System monitoring
-python monitor.py --health
-python monitor.py --watch 10  # Monitor every 10 seconds
-```
+## 🔧 Recent Changes (2025-08-28)
 
-## 🔍 Monitoring & Health Checks
+### Text Chunking Improvements
+Major improvements to text chunking quality and boundary handling:
 
-### System Health
-```bash
-# Check overall system health
-python monitor.py --health
+1. **Enhanced Separator Hierarchy**: Updated RecursiveCharacterTextSplitter to prioritize:
+   - Paragraph breaks (\n\n) - highest priority
+   - Sentence endings (. ? !) - clean sentence breaks  
+   - Line breaks (\n) - preserve structure
+   - Word boundaries ( ) - natural fallback
+   - Character level - last resort
 
-# Continuous monitoring
-python monitor.py --watch 5  # Check every 5 seconds
+2. **Chunk Overlap Boundary Fixing**: Added post-processing to fix overlap fragments:
+   - Detects and removes leading punctuation fragments like ". So, tak"
+   - Ensures chunks start at proper sentence boundaries with capital letters
+   - Maintains semantic coherence across chunk boundaries
+   - All chunks now start cleanly (100% success rate in testing)
 
-# Memory usage monitoring
-python monitor.py --memory
-```
+3. **Cursor-Based API Pagination**: Replaced broken page-based pagination with cursor-based:
+   - Enables access to all 500k+ historical SCOTUS dockets
+   - More reliable than calculated page skipping
+   - Proper handling of API ordering inconsistencies
+   - Smart consecutive empty page detection
 
-### Pipeline Status
-```bash
-# Check pipeline status and files
-python pipeline_runner.py --status
+### File Structure Changes
+- **Moved hybrid_indexer.py to root directory**: Simplified import structure for easier maintenance
+- **Updated all references**: Fixed imports in pipeline_runner.py and legal_rag_query.py
 
-# View configuration summary
-python config.py --summary
-```
+## ℹ️ Notes
 
-## ⚙️ Configuration Reference
-
-### Data Ingestion
-- `api_key`: CourtListener API key
-- `timeout_seconds`: Request timeout (default: 30)
-- `min_text_length`: Minimum text length for processing (default: 100)
-
-### Semantic Chunking
-- `model_name`: Legal BERT model (default: nlpaueb/legal-bert-base-uncased)
-- `target_chunk_size`: Target tokens per chunk (default: 384)
-- `quality_threshold`: Minimum quality score (default: 0.3)
-- `clustering_threshold`: Semantic similarity threshold (default: 0.25)
-
-### Vector Processing
-- `embedding_model`: BGE model for embeddings (default: BAAI/bge-small-en-v1.5)
-- `batch_size`: Processing batch size (default: 50)
-- `collection_name_vector`: Qdrant collection name
-
-### Batch Processing
-- `enable_batch_processing`: Enable batch mode (default: true)
-- `checkpoint_interval`: Progress logging frequency (default: 100)
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-#### Memory Issues
-```bash
-# Reduce batch sizes
-python pipeline_runner.py --court scotus --num-dockets 10
-
-# Monitor memory usage
-python monitor.py --memory
-```
-
-#### API Rate Limits
-```bash
-# Use smaller batch sizes and add delays
-python pipeline_runner.py --court scotus --num-dockets 5
-```
-
-#### Qdrant Connection Issues
-```bash
-# Check Qdrant Cloud connection
-python config.py --validate
-
-# Test cloud connection
-curl -H "api-key: your_api_key" https://your-cluster.cloud.qdrant.io:6333/health
-
-# Check local server status (if using local)
-curl http://localhost:6333/health
-```
-
-#### Cloud Free Tier Limits
-```bash
-# The pipeline automatically monitors your free tier usage
-# You'll see warnings like:
-# ☁️ Cloud storage used: 256.3MB / 1024MB (free tier)
-# 💾 Remaining free tier storage: 767.7MB
-
-# If you approach the limit, consider:
-# 1. Processing fewer documents at once
-# 2. Using smaller chunk sizes
-# 3. Upgrading to a paid plan
-```
-
-#### Interrupted Processing
-```bash
-# Resume from last checkpoint
-python pipeline_runner.py --resume --job-id <your-job-id>
-```
-
-### Debug Mode
-```bash
-# Enable verbose logging
-export LOG_LEVEL=DEBUG
-python pipeline_runner.py --court scotus --num-dockets 5
-```
-
-## 🔬 Technical Details
-
-### Models Used
-- **Legal BERT**: `nlpaueb/legal-bert-base-uncased` for semantic understanding
-- **BGE Embeddings**: `BAAI/bge-small-en-v1.5` for vector representations
-- **Vector Dimension**: 384 (optimized for legal content)
-
-### Processing Pipeline
-1. **Text Extraction**: HTML/XML parsing with BeautifulSoup
-2. **Legal Entity Recognition**: Citations, judges, parties, statutes
-3. **Semantic Clustering**: Agglomerative clustering with cosine similarity
-4. **Quality Validation**: 6-metric assessment including legal content detection
-5. **Vector Generation**: Context-enhanced embeddings with BGE optimization
-
-### Performance Characteristics
-- **Throughput**: ~5-10 documents/minute (depends on document size)
-- **Memory Usage**: ~2-4GB RAM for typical workloads
-- **Storage**: ~1.5KB per chunk in Qdrant
-- **Scalability**: Tested with 1000+ documents
+- No test suite currently exists in the codebase
+- No linting or type checking configuration found
+- Default models: Legal BERT for understanding, BGE for embeddings
+- Incremental processing mode is recommended for datasets larger than 20 dockets
+- Uses RecursiveCharacterTextSplitter with enhanced separators for improved chunking
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## 📄 License
-
-[License information here]
-
-## 🆘 Support
-
-For issues and questions:
-1. Check the troubleshooting section above
-2. Review configuration with `python config.py --validate`
-3. Check system health with `python monitor.py --health`
-4. Create an issue in the repository
+4. Submit a pull request
 
 ---
 
-## ☁️ Cloud Benefits
-
-### Why Use Qdrant Cloud?
-
-1. **Persistent Storage**: Your legal document database persists permanently - no more repeated API calls to CourtListener
-2. **Always Available**: Access your data from anywhere, anytime
-3. **No Setup Required**: No local Qdrant server maintenance
-4. **Free Tier**: 1GB storage permanently free (approximately 500K document chunks)
-5. **Automatic Backups**: Built-in reliability and data protection
-6. **Easy Scaling**: Upgrade to paid tiers when you need more capacity
-
-### Free Tier Capacity
-
-The 1GB free tier can store approximately:
-- **500,000 document chunks** with metadata
-- **50-100 complete legal cases** (depending on case length)
-- **Vector embeddings** for comprehensive search
-
-### Usage Monitoring
-
-The pipeline automatically tracks your cloud usage:
-```
-☁️ Cloud Qdrant detected - checking free tier limits
-☁️ Cloud storage used: 256.3MB / 1024MB (free tier)
-💾 Remaining free tier storage: 767.7MB
-```
-
-## 🌐 Web Interface
-
-### Simple Search Interface
-
-A clean Next.js web application provides an intuitive interface for querying your legal database:
-
-```bash
-# Navigate to web interface
-cd web-interface
-
-# Install dependencies
-npm install
-
-# Configure environment (copy your Qdrant and OpenAI credentials)
-cp .env.local.template .env.local
-
-# Start development server
-npm run dev
-```
-
-Visit [http://localhost:3000](http://localhost:3000) to use the search interface.
-
-### Features
-
-- **AI-Powered Search**: Enter legal questions in natural language
-- **Similarity Matching**: Finds most relevant case law using vector search
-- **Smart Citations**: Shows case names, courts, dates, and docket numbers
-- **Confidence Scoring**: Indicates reliability of search results
-- **Professional UI**: Clean interface designed for legal professionals
-
-### How It Works
-
-1. **User Query**: "What are the requirements for due process?"
-2. **Vector Search**: Finds similar legal documents in your Qdrant database
-3. **AI Analysis**: OpenAI analyzes top 3 matches and generates comprehensive answer
-4. **Citations**: Displays supporting case law with proper legal citations
-
-See `web-interface/README.md` for detailed setup and usage instructions.
-
----
-
-**Note**: This pipeline is optimized for vector-only processing by default. Hybrid search capabilities are available but disabled due to resource requirements. Use `--enable-hybrid` flag if needed.
+**Note**: This pipeline uses incremental processing by default for memory efficiency. The system processes each docket/batch completely (fetch → chunk → vectorize → upload) before moving to the next to prevent memory buildup and ensure partial results are saved.
