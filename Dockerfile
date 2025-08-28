@@ -34,4 +34,4 @@ RUN mkdir -p /app/data
 # 1. Run default: docker run image
 # 2. Override args: docker run image --court scotus --num-dockets 5
 ENTRYPOINT ["python", "pipeline_runner.py"]
-CMD ["--court", "scotus", "--num-dockets", "1"]
+CMD ["--court", "scotus", "--num-dockets", "50"]

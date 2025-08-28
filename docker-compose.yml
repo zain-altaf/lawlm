@@ -14,11 +14,11 @@ services:
       - QDRANT__LOG_LEVEL=INFO
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
-      interval: 30s
-      timeout: 10s
+      test: ["CMD", "sh", "-c", "grep -q ':18BD' /proc/net/tcp"]
+      interval: 15s
+      timeout: 5s
       retries: 3
-      start_period: 40s
+      start_period: 10s
     networks:
       - lawlm-network
 
