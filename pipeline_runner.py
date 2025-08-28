@@ -20,9 +20,8 @@ import re
 import uuid
 
 # Import our processing modules
-from fetch_and_process import process_docket, process_docket_in_batches
+from fetch_and_process import process_docket
 from config import PipelineConfig, load_config
-from batch_utils import BatchProcessor, create_job_id
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Handle vector processor import gracefully

@@ -43,7 +43,6 @@ lawlm/
 ├── config.py                  # Configuration management with cloud support
 ├── migrate_to_cloud.py        # Cloud migration utility
 ├── monitor.py                 # System monitoring and health checks
-├── batch_utils.py             # Batch processing utilities
 ├── data_ingestion.py          # CourtListener API integration
 ├── processing/
 │   ├── __init__.py            # Processing module exports
