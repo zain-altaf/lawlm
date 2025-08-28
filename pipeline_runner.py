@@ -58,136 +58,6 @@ class LegalDocumentPipeline:
         logger.info(f"📂 Working directory: {self.working_dir}")
         logger.info(f"🤖 Embedding model: {self.config.vector_processing.embedding_model}")
 
-    def run_full_pipeline(self, use_existing_raw: bool = False) -> Dict[str, Any]:
-        logger.info(f"🚀 Starting full legal document processing pipeline")
-        logger.info(f"🏛️ Court: {self.config.data_ingestion.court}, Dockets: {self.config.data_ingestion.num_dockets}")
-        pipeline_start = datetime.now()
-        results = {}
-
-        try:
-            raw_docs_path = self.working_dir / "raw_cases.json"
-            if use_existing_raw and raw_docs_path.exists():
-                logger.info(f"📄 Loading existing raw documents from: {raw_docs_path}")
-                with open(raw_docs_path, "r", encoding="utf-8") as f:
-                    docs = json.load(f)
-            else:
-                # Ingestion
-                docs = process_docket(
-                    court=self.config.data_ingestion.court,
-                    num_dockets=self.config.data_ingestion.num_dockets
-                )
-                with open(raw_docs_path, "w", encoding="utf-8") as f:
-                    json.dump(docs, f, ensure_ascii=False, indent=2)
-                logger.info(f"📄 Raw documents saved to: {raw_docs_path}")
-
-            # Chunking step - convert raw documents to chunks
-            chunks_path = self.working_dir / "semantic_chunks.json"
-            if not chunks_path.exists():
-                # Create LangChain splitter optimized for legal documents with paragraph preservation
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=self.config.text_splitter.chunk_size_chars,
-                    chunk_overlap=self.config.text_splitter.overlap_chars,
-                    length_function=len,
-                    separators=[
-                        "\n\n\n",  # Major section breaks
-                        "\n\n",    # Paragraph breaks (prioritized to keep paragraphs together)
-                        "\n",      # Line breaks
-                        ". ",      # Sentence endings
-                        "; ",      # Clause separators
-                        ", ",      # Phrase separators
-                        " ",       # Word boundaries
-                        ""         # Character level (fallback)
-                    ]
-                )
-
-                logger.info(f"🔪 Chunking {len(docs)} documents with LangChain RecursiveCharacterTextSplitter")
-                logger.info(f"   Chunk size: {self.config.text_splitter.chunk_size_chars} chars")
-                logger.info(f"   Overlap: {self.config.text_splitter.overlap_chars} chars")
-                logger.info(f"   Prioritizing paragraph preservation")
-
-                all_chunks = []
-                for doc_idx, doc in enumerate(docs):
-                    opinion_text = doc.get('opinion_text', '')
-                    if not opinion_text or len(opinion_text.strip()) < 50:
-                        continue
-
-                    # Split the document text
-                    text_chunks = text_splitter.split_text(opinion_text)
-
-                    # Convert to our chunk format with metadata
-                    for chunk_idx, chunk_text in enumerate(text_chunks):
-                        if len(chunk_text.strip()) < self.config.text_splitter.min_chunk_size_chars:
-                            continue
-
-                        chunk = {
-                            "chunk_id": (doc_idx * 10000) + chunk_idx,
-                            "document_id": str(doc.get('id', f'doc_{doc_idx}')),
-                            "docket_number": doc.get('docket_number', ''),
-                            "case_name": doc.get('case_name', ''),
-                            "court_id": doc.get('court_id', ''),
-                            "chunk_index": chunk_idx,
-                            "text": chunk_text.strip(),
-                            "token_count": len(chunk_text.split()),
-                            "sentence_count": len([s for s in chunk_text.split('.') if s.strip()]),
-                            "semantic_topic": "general",
-                            "legal_importance_score": 0.5,
-                            "keyword_density": 0.0,
-                            "citation_count": len(re.findall(r'\d+\s+[A-Z][a-z\.]*\s+\d+', chunk_text)),
-                            "citations_in_chunk": [],
-                            "chunk_confidence": 1.0,
-                            "author": doc.get('author', ''),
-                            "opinion_type": doc.get('opinion_type', ''),
-                            "date_filed": doc.get('date_filed', '')
-                        }
-                        all_chunks.append(chunk)
-
-                # Save chunks
-                with open(chunks_path, 'w', encoding='utf-8') as f:
-                    json.dump(all_chunks, f, ensure_ascii=False, indent=2)
-                logger.info(f"📁 Saved {len(all_chunks)} chunks to: {chunks_path}")
-            else:
-                logger.info(f"📁 Loading existing chunks from: {chunks_path}")
-                with open(chunks_path, 'r', encoding='utf-8') as f:
-                    all_chunks = json.load(f)
-
-            # Hybrid indexing (combines dense semantic vectors + sparse keyword vectors)
-            if VECTOR_PROCESSOR_AVAILABLE and self.config.vector_processing.collection_name_vector:
-                vector_processor = EnhancedVectorProcessor(
-                    model_name=self.config.vector_processing.embedding_model,
-                    collection_name=self.config.vector_processing.collection_name_vector,
-                    qdrant_url=self.config.qdrant.url
-                )
-                hybrid_collection = self.config.vector_processing.collection_name_vector
-                hybrid_results = vector_processor.create_hybrid_index(
-                    all_chunks,
-                    collection_name=hybrid_collection,
-                    batch_size=self.config.vector_processing.batch_size,
-                    checkpoint_interval=self.config.batch_processing.checkpoint_interval
-                )
-                results['hybrid'] = hybrid_results
-                logger.info(f"🔍 Hybrid collection: {hybrid_collection}")
-                logger.info(f"   Dense vectors: Semantic similarity search")
-                logger.info(f"   Sparse vectors: Keyword/phrase matching")
-                logger.info(f"   Search capability: Combined semantic + keyword via RRF")
-
-            pipeline_duration = (datetime.now() - pipeline_start).total_seconds()
-            summary_path = self.working_dir / "pipeline_summary.json"
-            summary = {
-                'pipeline_completed_at': datetime.now().isoformat(),
-                'total_duration_seconds': pipeline_duration,
-                'configuration': self.config.get_summary(),
-                'results': results
-            }
-            with open(summary_path, 'w', encoding='utf-8') as f:
-                json.dump(summary, f, ensure_ascii=False, indent=2)
-            logger.info(f"📋 Pipeline summary saved to: {summary_path}")
-
-            return results
-
-        except Exception as e:
-            logger.error(f"❌ Pipeline failed: {e}")
-            raise
-
     def get_pipeline_status(self) -> Dict[str, Any]:
         """Get current pipeline status and available data."""
         status = {
@@ -197,12 +67,13 @@ class LegalDocumentPipeline:
         }
         return status
 
-    def run_incremental_pipeline(self) -> Dict[str, Any]:
+    def run_pipeline(self) -> Dict[str, Any]:
         """
-        Run incremental pipeline - process each docket completely before moving to next.
+        Run the legal document processing pipeline.
+        Process each docket completely before moving to next (incremental processing).
         Includes proper pagination and deduplication.
         """
-        logger.info(f"🚀 Starting incremental pipeline")
+        logger.info(f"🚀 Starting legal document processing pipeline")
         logger.info(f"🏛️ Court: {self.config.data_ingestion.court}, Dockets: {self.config.data_ingestion.num_dockets}")
         start_time = datetime.now()
         
@@ -342,7 +213,7 @@ class LegalDocumentPipeline:
             
             final_summary = {
                 'status': 'completed',
-                'pipeline': 'incremental',
+                'pipeline': 'standard',
                 'court': self.config.data_ingestion.court,
                 'duration_seconds': duration,
                 'stats': stats,
@@ -350,12 +221,12 @@ class LegalDocumentPipeline:
             }
             
             # Save summary
-            summary_file = self.working_dir / "incremental_pipeline_summary.json"
+            summary_file = self.working_dir / "pipeline_summary.json"
             with open(summary_file, 'w', encoding='utf-8') as f:
                 json.dump(final_summary, f, indent=2)
             
             logger.info(f"\n{'='*50}")
-            logger.info(f"✅ Incremental pipeline completed!")
+            logger.info(f"✅ Pipeline completed!")
             logger.info(f"📊 Requested: {stats['total_requested']} dockets")
             logger.info(f"📊 Fetched: {stats['dockets_fetched']} dockets")
             logger.info(f"📊 Processed: {stats['dockets_processed']} new dockets")
@@ -371,7 +242,7 @@ class LegalDocumentPipeline:
             return final_summary
             
         except Exception as e:
-            logger.error(f"❌ Incremental pipeline failed: {e}")
+            logger.error(f"❌ Pipeline failed: {e}")
             raise
 
     def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
@@ -576,15 +447,14 @@ def main():
     )
     parser.add_argument('--config', help='Configuration file path (JSON)')
     parser.add_argument('--status', action='store_true', help='Show pipeline status and exit')
-    parser.add_argument('--use-existing-raw', action='store_true', help='Use existing raw_cases.json and skip ingestion')
-    parser.add_argument('--incremental', action='store_true', help='Use incremental processing mode (process each docket/batch completely before fetching next)')
     parser.add_argument('--court', help='Court identifier (e.g., scotus, ca1)')
     parser.add_argument('--num-dockets', type=int, help='Number of dockets to process')
     parser.add_argument('--batch-size', type=int, help='Process dockets in batches of this size')
 
     args = parser.parse_args()
 
-    # Load configuration
+    # Load config from JSON if path provided, otherwise load_config()
+    # from config.py as default
     config = load_config(args.config) if args.config else load_config()
     
     # Override config with command line arguments
@@ -603,14 +473,9 @@ def main():
         print(json.dumps(status, indent=2))
         return
 
-    # Run pipeline with specified mode
-    if args.incremental:
-        logger.info("🔄 Using incremental processing mode")
-        results = pipeline.run_incremental_pipeline()
-        print(json.dumps(results, indent=2))
-    else:
-        logger.info("🔄 Using standard processing mode")
-        pipeline.run_full_pipeline(use_existing_raw=args.use_existing_raw)
+    # Run pipeline
+    results = pipeline.run_pipeline()
+    print(json.dumps(results, indent=2))
 
 if __name__ == "__main__":
     main()
