@@ -23,9 +23,10 @@ import os
 from dotenv import load_dotenv
 
 # Import our processing modules
-from fetch_and_process import process_docket
+from fetch_and_process import process_docket, enhanced_text_processing
 from config import PipelineConfig, load_config
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter as NewRecursiveCharacterTextSplitter
 
 # Handle vector processor import gracefully
 try:
@@ -90,12 +91,21 @@ class LegalDocumentPipeline:
             )
             logger.info(f"🤖 Vector processor initialized with deduplication")
 
-        # Initialize text splitter
+        # Initialize text splitter with enhanced separators for legal text
+        # Prioritize paragraphs, then sentences, then lines, then words
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.config.text_splitter.chunk_size_chars,
             chunk_overlap=self.config.text_splitter.overlap_chars,
             length_function=len,
-            separators=["\n\n\n", "\n\n", "\n", ". ", "; ", ", ", " ", ""]
+            separators=[
+                "\n\n",    # Paragraph breaks (highest priority)
+                ". ",      # Sentence endings  
+                "? ",      # Question endings
+                "! ",      # Exclamation endings
+                "\n",      # Line breaks
+                " ",       # Word boundaries  
+                ""         # Character level (last resort)
+            ]
         )
         
         # Get all unique dockets in Qdrant
@@ -162,7 +172,10 @@ class LegalDocumentPipeline:
                         if not opinion_text or len(opinion_text.strip()) < 50:
                             continue
 
-                        text_chunks = text_splitter.split_text(opinion_text)
+                        raw_chunks = text_splitter.split_text(opinion_text)
+                        
+                        # Clean up chunk boundaries to ensure complete sentences
+                        text_chunks = self._clean_chunk_boundaries(raw_chunks)
                         
                         for chunk_idx, chunk_text in enumerate(text_chunks):
                             if len(chunk_text.strip()) < self.config.text_splitter.min_chunk_size_chars:
@@ -356,12 +369,33 @@ class LegalDocumentPipeline:
         
         return final_new_dockets
 
+    def _clean_chunk_boundaries(self, chunks: List[str]) -> List[str]:
+        """
+        Light cleanup of chunk boundaries to fix any remaining edge cases.
+        With better separators, this should be minimal.
+        """
+        if not chunks:
+            return chunks
+        
+        cleaned_chunks = []
+        
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if not chunk or len(chunk) < 50:  # Skip very short chunks
+                continue
+                
+            # Light cleanup: remove leading punctuation fragments
+            while chunk and chunk.startswith(('. ', ', ', '; ', ': ')):
+                chunk = chunk[2:].strip()
+                
+            # Ensure minimum quality
+            if chunk and len(chunk.strip()) > 50:
+                cleaned_chunks.append(chunk)
+        
+        return cleaned_chunks
+    
     def _fetch_docket_documents(self, docket: Dict[str, Any], court: str) -> List[Dict[str, Any]]:
         """Fetch and process documents for a specific docket object."""
-        import requests
-        import os
-        from dotenv import load_dotenv
-        from fetch_and_process import enhanced_text_processing
         
         load_dotenv()
         CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
