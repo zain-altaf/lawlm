@@ -7,6 +7,7 @@ validation, and monitoring capabilities.
 
 import os
 import json
+import argparse
 import logging
 from typing import Dict, Any, Optional, List
 from pathlib import Path
@@ -420,16 +421,26 @@ def set_config(config: PipelineConfig) -> None:
 
 
 if __name__ == "__main__":
-    # CLI for configuration management
-    import argparse
-    
+    """CLI for configuration management. This typically is not used
+    in the data ingestion scripts but can be used to check configuration
+    settings quickly in the command line"""
+
     parser = argparse.ArgumentParser(description="Legal Document Pipeline Configuration")
+    
+    # creates config with defaults. You usually want to use this to
+    # generate a new JSON when you change the defaults of the pipeline
     parser.add_argument('--create-default', action='store_true',
                        help='Create default configuration file')
+    
+    # if you pass in a config file JSON
     parser.add_argument('--config-file', default='config.json',
                        help='Configuration file path')
+    
+    # validate a configuration that you want to pass in
     parser.add_argument('--validate', action='store_true',
                        help='Validate configuration')
+    
+    # check the configuration summary
     parser.add_argument('--summary', action='store_true',
                        help='Show configuration summary')
     
