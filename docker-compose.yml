@@ -1,0 +1,67 @@
+# current services: qdrant (connecting to qdrant), lawlm-pipeline (run the ingestion), lawlm-query (testing the rag + llm system)
+version: "3.8"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"  # gRPC port
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - lawlm-network
+
+  lawlm-pipeline:
+    build: .
+    container_name: lawlm-pipeline
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    command: ["--court", "scotus", "--num-dockets", "1"]
+    networks:
+      - lawlm-network
+
+  # Optional: Add this service if you want to run queries after pipeline completes
+  lawlm-query:
+    build: .
+    container_name: lawlm-query
+    depends_on:
+      - qdrant
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    entrypoint: ["python", "legal_rag_query.py"]
+    command: ["What are the requirements for due process?"]
+    profiles:
+      - query
+    networks:
+      - lawlm-network
+
+networks:
+  lawlm-network:
+    driver: bridge
+
+volumes:
+  qdrant_storage:
