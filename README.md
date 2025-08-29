@@ -9,7 +9,7 @@ This pipeline provides core functionality for legal document processing and retr
 - **Data Ingestion**: Fetches legal cases from CourtListener API with batch processing support
 - **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with enhanced boundary handling
 - **Vector Processing**: Creates embeddings using BGE models (BAAI/bge-small-en-v1.5)
-- **Storage**: Qdrant vector database (local or cloud) with hybrid search capabilities
+- **Storage**: Qdrant vector database (local or cloud) with semantic search capabilities
 - **Query Interface**: RAG-based legal document retrieval system
 - **Incremental Processing**: Memory-efficient processing that prevents memory buildup
 
@@ -21,42 +21,45 @@ CourtListener API → Data Ingestion → Text Chunking → Vector Processing →
 
 ### Pipeline Flow:
 1. **Data Ingestion**: Fetch legal documents from CourtListener API
-2. **Text Chunking**: Break documents into coherent chunks using RecursiveCharacterTextSplitter
-3. **Vector Processing**: Create semantic embeddings using BGE models
-4. **Storage**: Store vectors in Qdrant vector database with hybrid search capabilities
+2. **Text Chunking**: Break documents into coherent chunks using RecursiveCharacterTextSplitter. It prioritizes chunking paragraphs and sentences that are complete along with some overlapping between chunks of text.
+3. **Vector Processing**: Create semantic embeddings using BGE model (this can be modified to other embedding models if the user chooses)
+4. **Storage**: Store vector representations of chunks along with payloads with descriptive fields in Qdrant vector database with hybrid search capabilities
 
 ## 📁 File Structure
 
 ```
 lawlm/
 ├── README.md                   # Main documentation
-├── CLAUDE.md                   # Project instructions for Claude Code
 ├── requirements.txt            # Python dependencies
-├── pipeline_runner.py          # Main pipeline orchestrator
-├── config.py                  # Configuration management
-├── fetch_and_process.py        # CourtListener API integration
-├── hybrid_indexer.py           # Creates hybrid (vector + keyword) search indexes
+├── pipeline_runner.py          # Main pipeline orchestrator with data ingestion
+├── config.py                   # Configuration management
+├── hybrid_indexer.py           # Vector processing and text extraction
 ├── legal_rag_query.py          # RAG system for querying the vector database
-├── get_unique_dockets.py       # Utility for managing dockets
-├── validate_missing_dockets.py # Validation utilities
-├── manage_qdrant.sh           # Qdrant management script
-├── data/                      # Working directory for pipeline files
-├── qdrant_storage/           # Local Qdrant storage
+├── manage_qdrant.sh            # Qdrant management script
+├── data/                       # Working directory for pipeline files
+├── qdrant_storage/             # Local Qdrant storage
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-1. **Python 3.8+** with pip
+1. **Python 3.9+** with pip
 2. **CourtListener API key** ([get one here](https://www.courtlistener.com/api/))
 3. **Qdrant** (local or cloud deployment)
 
 ### Installation
 
+**Note**: It is strongly recommended that you use a package manager (such as conda, or venv) when working with dependencies. You can install miniconda, a minimal installer for Conda here: https://www.anaconda.com/docs/getting-started/miniconda/install
+
+
 ```bash
+# Create and activate a miniconda environment
+conda create -n lawlmenv -y python=3.9
+conda activate lawlmenv
+
 # Clone repository
-git clone <repository-url>
+git clone https://github.com/zain-altaf/lawlm.git
 cd lawlm
 
 # Install dependencies
@@ -109,14 +112,11 @@ python pipeline_runner.py --status
 ### Individual Components
 
 ```bash
-# Data ingestion only
-python fetch_and_process.py --court scotus --num_dockets 5
-
 # Query the vector database
 python legal_rag_query.py "What are the requirements for due process?"
 
-# Run hybrid indexing
-python hybrid_indexer.py
+# Run hybrid indexing (standalone mode)
+python hybrid_indexer.py chunks_file.json
 ```
 
 ### Configuration
@@ -131,13 +131,10 @@ python config.py --summary
 
 ## 📂 Key Files and Their Purposes
 
-- **pipeline_runner.py**: Main orchestrator using incremental processing (includes smart pagination and deduplication)
-- **fetch_and_process.py**: Handles data ingestion from CourtListener API and initial processing
+- **pipeline_runner.py**: Main orchestrator that handles data ingestion from CourtListener API, text chunking, and calls vector processing
+- **hybrid_indexer.py**: Contains all text processing functions (entity extraction, citation extraction), vector embedding creation, and Qdrant upload
 - **legal_rag_query.py**: RAG system for querying the vector database with natural language
 - **config.py**: Central configuration management for all pipeline components
-- **hybrid_indexer.py**: Creates hybrid (vector + keyword) search indexes in Qdrant (includes incremental processing)
-- **get_unique_dockets.py**: Utility for managing and analyzing docket collections
-- **validate_missing_dockets.py**: Validation utilities for data integrity
 
 ## 🔧 Environment Variables
 
@@ -216,6 +213,26 @@ Major improvements to text chunking quality and boundary handling:
 - Default models: Legal BERT for understanding, BGE for embeddings
 - Incremental processing mode is recommended for datasets larger than 20 dockets
 - Uses RecursiveCharacterTextSplitter with enhanced separators for improved chunking
+
+## 🔄 Open Tasks / TODO
+
+Tasks to be implemented in future iterations:
+
+### High Priority
+- [ ] **Implement Hybrid Search**: Enable `create_hybrid_index()` and `hybrid_search()` methods in pipeline
+  - Currently only dense vectors are created, sparse vectors are not utilized
+  - Need to modify pipeline_runner.py to call `create_hybrid_index()` instead of `process_and_upload_batch()`
+  - Files: `hybrid_indexer.py:713`, `hybrid_indexer.py:944`
+
+### Medium Priority
+- [ ] Add test suite for pipeline components
+- [ ] Implement linting and type checking configuration
+- [ ] Add web interface for document upload and search
+
+### Low Priority
+- [ ] Add support for additional embedding models
+- [ ] Implement document versioning and updates
+- [ ] Add support for more court systems beyond SCOTUS
 
 ## 🤝 Contributing
 

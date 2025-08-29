@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from sklearn.feature_extraction.text import TfidfVectorizer
 from scipy.sparse import csr_matrix
 import numpy as np
+import re
+from bs4 import BeautifulSoup
 
 # Handle torch import gracefully
 try:
@@ -31,6 +33,120 @@ except ImportError as e:
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def extract_legal_citations(text: str) -> List[str]:
+    """Extract legal citations from text using regex patterns."""
+    citation_patterns = [
+        # U.S. Reports: e.g., "123 U.S. 456 (1987)"
+        r'\b\d+\s+U\.S\.?\s+\d+\s*\(\d{4}\)',
+        # Federal Reporter: e.g., "123 F.2d 456 (9th Cir. 1987)"
+        r'\b\d+\s+F\.\s*(?:2d|3d)?\s+\d+\s*\([^)]*\d{4}\)',
+        # Supreme Court Reporter: e.g., "123 S. Ct. 456 (1987)"
+        r'\b\d+\s+S\.\s*Ct\.\s+\d+\s*\(\d{4}\)',
+        # State cases: e.g., "123 Cal. App. 2d 456 (1987)"
+        r'\b\d+\s+[A-Z][a-z]*\.?\s*(?:App\.?\s*)?(?:\d[a-z]*\s+)?\d+\s*\([^)]*\d{4}\)',
+        # Law reviews: e.g., "123 Harv. L. Rev. 456 (1987)"
+        r'\b\d+\s+[A-Z][a-z]*\.?\s*L\.?\s*Rev\.?\s+\d+\s*\(\d{4}\)'
+    ]
+    
+    citations = []
+    for pattern in citation_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        citations.extend(matches)
+    
+    return list(set(citations))  # Remove duplicates
+
+
+def extract_legal_entities(text: str) -> Dict[str, List[str]]:
+    """Extract legal entities like judges, parties, courts, etc."""
+    entities = {
+        'judges': [],
+        'parties': [],
+        'courts': [],
+        'statutes': []
+    }
+    
+    # Judge patterns: "Justice [Name]", "Judge [Name]", "Chief Justice [Name]"
+    judge_patterns = [
+        r'(?:Justice|Judge|Chief Justice|Associate Justice)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+        r'([A-Z][a-z]+),?\s+(?:J\.|C\.J\.|Associate Justice|Chief Justice)'
+    ]
+    
+    for pattern in judge_patterns:
+        matches = re.findall(pattern, text)
+        entities['judges'].extend([match.strip() for match in matches if isinstance(match, str)])
+    
+    # Party patterns: "Plaintiff v. Defendant" format
+    party_pattern = r'([A-Z][a-zA-Z\s&,\.]+?)\s+v\.?\s+([A-Z][a-zA-Z\s&,\.]+?)(?:\s|,|\.|\n)'
+    party_matches = re.findall(party_pattern, text)
+    for plaintiff, defendant in party_matches:
+        entities['parties'].extend([plaintiff.strip(), defendant.strip()])
+    
+    # Court patterns
+    court_patterns = [
+        r'(Supreme Court of [A-Z][a-zA-Z\s]+)',
+        r'(United States Supreme Court)',
+        r'([A-Z][a-zA-Z\s]+ Circuit Court of Appeals)',
+        r'([A-Z][a-zA-Z\s]+ District Court)',
+        r'(Court of Appeals for the [A-Z][a-zA-Z\s]+ Circuit)'
+    ]
+    
+    for pattern in court_patterns:
+        matches = re.findall(pattern, text)
+        entities['courts'].extend(matches)
+    
+    # Statute patterns: "42 U.S.C. § 1983", "Title VII", etc.
+    statute_patterns = [
+        r'\b\d+\s+U\.S\.C\.?\s*§+\s*\d+[a-z]*(?:\([^)]+\))*',
+        r'Title\s+[IVX]+(?:\s+of\s+[^,.\n]+)?',
+        r'Section\s+\d+[a-z]*(?:\([^)]+\))*'
+    ]
+    
+    for pattern in statute_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        entities['statutes'].extend(matches)
+    
+    # Clean and deduplicate
+    for key in entities:
+        entities[key] = list(set([item.strip() for item in entities[key] if item.strip()]))
+    
+    return entities
+
+
+def clean_text(content: str) -> str:
+    """Strips HTML/XML tags and normalizes whitespace."""
+    if not content:
+        return ''
+    soup = BeautifulSoup(content, "html.parser")
+    text = soup.get_text(separator=' ', strip=True)
+    return re.sub(r'\s+', ' ', text)
+
+
+def enhanced_text_processing(text: str) -> Dict[str, Any]:
+    """Enhanced processing that extracts citations and legal entities."""
+    if not text:
+        return {
+            'cleaned_text': '',
+            'citations': [],
+            'legal_entities': {'judges': [], 'parties': [], 'courts': [], 'statutes': []},
+            'text_stats': {'length': 0, 'word_count': 0}
+        }
+    
+    cleaned = clean_text(text)
+    citations = extract_legal_citations(cleaned)
+    entities = extract_legal_entities(cleaned)
+    
+    return {
+        'cleaned_text': cleaned,
+        'citations': citations,
+        'legal_entities': entities,
+        'text_stats': {
+            'length': len(cleaned),
+            'word_count': len(cleaned.split()),
+            'citation_count': len(citations)
+        }
+    }
 
 
 def get_memory_usage() -> Dict[str, float]:
@@ -138,8 +254,13 @@ class EnhancedVectorProcessor:
     
 
     def _create_enhanced_text(self, chunk: Dict[str, Any]) -> str:
-        """Create enhanced text representation for better embeddings."""
+        """Create enhanced text representation for better embeddings with full legal extraction."""
         text = chunk.get('text', '')
+        
+        # Extract legal metadata from chunk text
+        extracted_info = enhanced_text_processing(text)
+        citations = extracted_info.get('citations', [])
+        entities = extracted_info.get('legal_entities', {})
         
         # Add contextual information for better embeddings
         case_name = chunk.get('case_name', '')
@@ -161,8 +282,18 @@ class EnhancedVectorProcessor:
         if author:
             enhanced_parts.append(f"Author: {author}")
         
-        # Add the main text
-        enhanced_parts.append(text)
+        # Add extracted legal context
+        if citations:
+            enhanced_parts.append(f"Citations: {', '.join(citations[:5])}")  # Limit to first 5
+        
+        if entities.get('judges'):
+            enhanced_parts.append(f"Judges: {', '.join(entities['judges'][:3])}")  # Limit to first 3
+        
+        if entities.get('statutes'):
+            enhanced_parts.append(f"Statutes: {', '.join(entities['statutes'][:3])}")  # Limit to first 3
+        
+        # Add the main text (cleaned version)
+        enhanced_parts.append(extracted_info['cleaned_text'])
         
         # Combine with separator
         enhanced_text = " | ".join(enhanced_parts)
@@ -170,6 +301,10 @@ class EnhancedVectorProcessor:
         # Add BGE passage prefix if applicable
         if self.passage_prefix:
             enhanced_text = self.passage_prefix + enhanced_text
+        
+        # Store extracted metadata back in chunk for later use
+        chunk['extracted_citations'] = citations
+        chunk['extracted_entities'] = entities
         
         return enhanced_text
     
@@ -363,14 +498,15 @@ class EnhancedVectorProcessor:
                     )
                 )
             
-            # Create embeddings for chunks
-            texts = [chunk['text'] for chunk in chunks]
-            if self.passage_prefix:
-                texts = [self.passage_prefix + text for text in texts]
+            # Create enhanced texts and embeddings for chunks
+            enhanced_texts = []
+            for chunk in chunks:
+                enhanced_text = self._create_enhanced_text(chunk)
+                enhanced_texts.append(enhanced_text)
             
             embeddings = self.embedder.encode(
-                texts,
-                batch_size=min(len(texts), 16),
+                enhanced_texts,
+                batch_size=min(len(enhanced_texts), 16),
                 show_progress_bar=False,
                 convert_to_numpy=True
             )
@@ -380,7 +516,7 @@ class EnhancedVectorProcessor:
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 point_id = str(uuid.uuid4())
                 
-                # Create payload with all chunk metadata
+                # Create payload with all chunk metadata including extracted entities
                 payload = {
                     'chunk_id': chunk.get('chunk_id', point_id),
                     'document_id': chunk.get('document_id', ''),
@@ -393,7 +529,9 @@ class EnhancedVectorProcessor:
                     'opinion_type': chunk.get('opinion_type', ''),
                     'date_filed': chunk.get('date_filed', ''),
                     'token_count': chunk.get('token_count', len(chunk['text'].split())),
-                    'citation_count': chunk.get('citation_count', 0)
+                    'citation_count': len(chunk.get('extracted_citations', [])),
+                    'citations': chunk.get('extracted_citations', []),
+                    'legal_entities': chunk.get('extracted_entities', {})
                 }
                 
                 points.append(models.PointStruct(
@@ -710,6 +848,7 @@ class EnhancedVectorProcessor:
         
         return sparse_dict
     
+    # TODO implement hybrid search later
     def create_hybrid_index(self, chunks: List[Dict[str, Any]], 
                            collection_name: str = None,
                            batch_size: int = 50,
@@ -940,6 +1079,7 @@ class EnhancedVectorProcessor:
         
         return collection_name
     
+    # TODO: make use of hybrid search later
     def hybrid_search(self, 
                      query: str,
                      collection_name: str = None,
