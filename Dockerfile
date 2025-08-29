@@ -18,7 +18,6 @@ RUN pip install --no-cache-dir --timeout=1200 --retries=5 \
 
 # Copy all Python modules required for the pipeline
 COPY pipeline_runner.py .
-COPY fetch_and_process.py .
 COPY config.py .
 COPY hybrid_indexer.py .
 COPY legal_rag_query.py .

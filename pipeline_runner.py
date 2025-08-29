@@ -23,18 +23,18 @@ import os
 from dotenv import load_dotenv
 
 # Import our processing modules
-from fetch_and_process import process_docket, enhanced_text_processing
 from config import PipelineConfig, load_config
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_text_splitters import RecursiveCharacterTextSplitter as NewRecursiveCharacterTextSplitter
 
 # Handle vector processor import gracefully
 try:
-    from hybrid_indexer import EnhancedVectorProcessor
+    from hybrid_indexer import EnhancedVectorProcessor, enhanced_text_processing
     VECTOR_PROCESSOR_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Vector processing not available ({e}). Only chunking will work.")
     EnhancedVectorProcessor = None
+    enhanced_text_processing = None
     VECTOR_PROCESSOR_AVAILABLE = False
 
 logging.basicConfig(
@@ -190,10 +190,12 @@ class LegalDocumentPipeline:
                                 "chunk_index": chunk_idx,
                                 "text": chunk_text.strip(),
                                 "token_count": len(chunk_text.split()),
-                                "citation_count": len(re.findall(r'\d+\s+[A-Z][a-z\.]*\s+\d+', chunk_text)),
                                 "author": doc.get('author', ''),
                                 "opinion_type": doc.get('opinion_type', ''),
-                                "date_filed": doc.get('date_filed', '')
+                                "date_filed": doc.get('date_filed', ''),
+                                # Pass through document-level extracted data
+                                "doc_citations": doc.get('citations', []),
+                                "doc_legal_entities": doc.get('legal_entities', {})
                             }
                             all_chunks.append(chunk)
                     
