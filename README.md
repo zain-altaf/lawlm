@@ -35,7 +35,6 @@ lawlm/
 ├── config.py                   # Configuration management
 ├── hybrid_indexer.py           # Vector processing and text extraction
 ├── legal_rag_query.py          # RAG system for querying the vector database
-├── manage_qdrant.sh            # Qdrant management script
 ├── data/                       # Working directory for pipeline files
 ├── qdrant_storage/             # Local Qdrant storage
 ```
@@ -50,20 +49,20 @@ lawlm/
 
 ### Installation
 
-**Note**: It is strongly recommended that you use a package manager (such as conda, or venv) when working with dependencies. You can install miniconda, a minimal installer for Conda here: https://www.anaconda.com/docs/getting-started/miniconda/install
+**Note**: It ensure you use a package manager (such as conda, or venv) when working with dependencies. You can install miniconda, an installer for Conda here: https://www.anaconda.com/docs/getting-started/miniconda/install
 
 
 ```bash
-# Create and activate a miniconda environment
-conda create -n lawlmenv -y python=3.9
+# Create and activate a miniconda environment (ensure sure to use only v3.10)
+conda create -n lawlmenv -y python=3.10
 conda activate lawlmenv
 
 # Clone repository
 git clone https://github.com/zain-altaf/lawlm.git
 cd lawlm
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (Note: only the CPU torch version is supported at this time)
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Set up environment variables
 cp .env.template .env
