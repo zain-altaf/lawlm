@@ -29,7 +29,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter as NewRecurs
 
 # Handle vector processor import gracefully
 try:
-    from hybrid_indexer import EnhancedVectorProcessor, enhanced_text_processing
+    from vector_processor import EnhancedVectorProcessor, enhanced_text_processing
     VECTOR_PROCESSOR_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Vector processing not available ({e}). Only chunking will work.")

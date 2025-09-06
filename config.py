@@ -62,11 +62,7 @@ class VectorProcessingConfig:
     
     def __post_init__(self):
         if self.device == "auto":
-            try:
-                import torch
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                self.device = "cpu"
+            self.device = "cpu"  # Force CPU-only processing
 
 
 @dataclass
@@ -130,7 +126,6 @@ class MonitoringConfig:
     log_performance_metrics: bool = True
     save_processing_summary: bool = True
     alert_memory_threshold_mb: float = 8192  # 8GB
-    alert_gpu_memory_threshold_mb: float = 10240  # 10GB
 
 
 class PipelineConfig:
