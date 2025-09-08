@@ -58,7 +58,7 @@ class VectorProcessingConfig:
     batch_size: int = 50
     memory_cleanup_frequency: int = 100
     device: str = "auto"
-    collection_name_vector: str = "caselaw-chunks-hybrid"
+    collection_name_vector: str = "caselaw-chunks"
     
     def __post_init__(self):
         if self.device == "auto":

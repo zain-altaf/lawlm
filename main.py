@@ -29,12 +29,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter as NewRecurs
 
 # Handle vector processor import gracefully
 try:
-    from vector_processor import EnhancedVectorProcessor, enhanced_text_processing
+    from vector_processor import EnhancedVectorProcessor
     VECTOR_PROCESSOR_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Vector processing not available ({e}). Only chunking will work.")
     EnhancedVectorProcessor = None
-    enhanced_text_processing = None
     VECTOR_PROCESSOR_AVAILABLE = False
 
 logging.basicConfig(
@@ -108,18 +107,20 @@ class LegalDocumentPipeline:
             ]
         )
         
-        # Get all unique dockets in Qdrant
+        # Get all existing dockets in Qdrant
         existing_dockets = set()
         if vector_processor:
-            existing_dockets = vector_processor.get_existing_docket_numbers()
+            existing_dockets = vector_processor.get_existing_docket_ids()
             logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
         
+        breakpoint()
+
         # Stats tracking
         stats = {
             'total_requested': self.config.data_ingestion.num_dockets,
             'dockets_fetched': 0,
             'dockets_processed': 0,
-            'documents_processed': 0,
+            'opinions_processed': 0,
             'chunks_created': 0,
             'vectors_uploaded': 0,
             'duplicates_skipped': 0,
@@ -135,8 +136,11 @@ class LegalDocumentPipeline:
                 existing_dockets
             )
 
-            stats['dockets_fetched'] = len(new_dockets)  # These are all new
-            stats['duplicates_skipped'] = 0  # Will be calculated during smart pagination
+            docket_ids = [docket.get('id') for docket in new_dockets if 'id' in docket]
+            breakpoint()
+
+            stats['dockets_fetched'] = len(new_dockets)
+            stats['duplicates_skipped'] = 0
             
             logger.info(f"📊 Smart pagination found {len(new_dockets)} new dockets to process")
             
@@ -148,27 +152,28 @@ class LegalDocumentPipeline:
                     'message': 'All requested dockets already exist in collection'
                 }
             
-            # Step 2: Process each NEW docket incrementally  
+            # Step 2: Process each docket incrementally  
             for idx, docket in enumerate(new_dockets, 1):
-                docket_number = docket.get('docket_number', '')
-                if not docket_number:
+                docket_id = docket.get('id', '')
+                if not docket_id:
                     continue
                     
-                logger.info(f"\n[{idx}/{len(new_dockets)}] Processing docket {docket_number}")
+                logger.info(f"\n[{idx}/{len(new_dockets)}] Processing docket {docket_id}")
                 
                 try:
-                    # Fetch documents for this specific docket directly
-                    docket_docs = self._fetch_docket_documents(docket, self.config.data_ingestion.court)
-                    stats['documents_processed'] += len(docket_docs)
+                    # Fetch all opinions for all cluster in this specific docket directly
+                    _, docket_opinions = self._fetch_docket_clusters_and_opinions(docket, self.config.data_ingestion.court, vector_processor)
+
+                    stats['opinions_processed'] += len(docket_opinions)
                     
-                    if not docket_docs:
-                        logger.warning(f"⚠️ No documents found for docket {docket_number}")
+                    if not docket_opinions:
+                        logger.warning(f"⚠️ No opinions found for docket {docket_id}, skipping")
                         continue
                     
                     # Chunk documents
                     all_chunks = []
-                    for doc_idx, doc in enumerate(docket_docs):
-                        opinion_text = doc.get('opinion_text', '')
+                    for _, op in enumerate(docket_opinions):
+                        opinion_text = op.get('opinion_text', '')
                         if not opinion_text or len(opinion_text.strip()) < 50:
                             continue
 
@@ -182,21 +187,29 @@ class LegalDocumentPipeline:
                                 continue
 
                             chunk = {
-                                "chunk_id": f"{doc['id']}_{chunk_idx}",
-                                "document_id": str(doc.get('id', f'doc_{doc_idx}')),
-                                "docket_number": doc.get('docket_number', ''),
-                                "case_name": doc.get('case_name', ''),
-                                "court_id": doc.get('court_id', ''),
+                                "docket_id": docket_id,
+                                "cluster_id": op.get('cluster_id', ''),
+                                "opinion_id": op.get('opinion_id', ''),
+                                "chunk_id": f"{op.get('opinion_id', 'unknown')}_{chunk_idx}",
+                                "docket_number": docket.get('docket_number', ''),
+                                "case_name": op.get('case_name', ''),
+                                "court_id": op.get('court_id', ''),
                                 "chunk_index": chunk_idx,
+                                "judges": op.get('judges', ''),
+                                "author": op.get('author', ''),
+                                "opinion_type": op.get('opinion_type', ''),
+                                "date_filed": op.get('date_filed', ''),
                                 "text": chunk_text.strip(),
-                                "token_count": len(chunk_text.split()),
-                                "author": doc.get('author', ''),
-                                "opinion_type": doc.get('opinion_type', ''),
-                                "date_filed": doc.get('date_filed', ''),
-                                # Pass through document-level extracted data
-                                "doc_citations": doc.get('citations', []),
-                                "doc_legal_entities": doc.get('legal_entities', {})
+                                "precedential_status": op.get('precedential_status', ''),
+                                "sha1": op.get('sha1', ''),
+                                "download_url": op.get('download_url', ''),
+                                "source_field": op.get('source_field', ''),
+                                "citations": op.get('citations', []),
+                                "legal_entities": op.get('legal_entities', {}),
+                                "date_created": op.get('date_created', ''),
+                                "date_modified": op.get('date_modified', '')
                             }
+
                             all_chunks.append(chunk)
                     
                     stats['chunks_created'] += len(all_chunks)
@@ -210,22 +223,22 @@ class LegalDocumentPipeline:
                         for i in range(0, len(all_chunks), batch_size):
                             batch = all_chunks[i:i + batch_size]
                             try:
-                                result = vector_processor.process_and_upload_batch(
+                                result = vector_processor.process_and_upload_chunks(
                                     batch,
                                     collection_name=self.config.vector_processing.collection_name_vector
                                 )
                                 stats['vectors_uploaded'] += result.get('vectors_created', 0)
                             except Exception as e:
                                 logger.error(f"Failed to upload batch: {e}")
-                                stats['errors'].append({'docket': docket_number, 'error': str(e)})
+                                stats['errors'].append({'docket': docket_id, 'error': str(e)})
                     
                     stats['dockets_processed'] += 1
-                    logger.info(f"✅ Docket {docket_number}: {len(docket_docs)} docs, {len(all_chunks)} chunks")
-                    
+                    logger.info(f"✅ Docket {docket_id}: {len(docket.get('clusters', []))} clusters, {len(docket_opinions)} opinions, {len(all_chunks)} chunks")
+
                 except Exception as e:
-                    logger.error(f"❌ Error processing docket {docket_number}: {e}")
-                    stats['errors'].append({'docket': docket_number, 'error': str(e)})
-            
+                    logger.error(f"❌ Error processing docket {docket_id}: {e}")
+                    stats['errors'].append({'docket': docket_id, 'error': str(e)})
+
             # Final summary
             duration = (datetime.now() - start_time).total_seconds()
             
@@ -249,7 +262,7 @@ class LegalDocumentPipeline:
             logger.info(f"📊 Fetched: {stats['dockets_fetched']} dockets")
             logger.info(f"📊 Processed: {stats['dockets_processed']} new dockets")
             logger.info(f"📊 Skipped duplicates: {stats['duplicates_skipped']}")
-            logger.info(f"📄 Documents: {stats['documents_processed']}")
+            logger.info(f"📄 Opinions: {stats['opinions_processed']}")
             logger.info(f"🔪 Chunks: {stats['chunks_created']}")
             logger.info(f"🔮 Vectors: {stats['vectors_uploaded']}")
             logger.info(f"⏱️ Duration: {duration:.2f} seconds")
@@ -263,6 +276,7 @@ class LegalDocumentPipeline:
             logger.error(f"❌ Pipeline failed: {e}")
             raise
 
+
     def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
         """
         Fetch dockets using linear pagination, checking each docket against existing ones.
@@ -275,9 +289,9 @@ class LegalDocumentPipeline:
         
         new_dockets = []
         page_count = 0
-        page_size = 200  # Use larger page size to reduce API calls
+        page_size = 200
         consecutive_empty_pages = 0
-        max_consecutive_empty = 50  # Keep going until we find unprocessed older dockets
+        max_consecutive_empty = 50
 
         logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (oldest first)...")
         logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
@@ -327,8 +341,8 @@ class LegalDocumentPipeline:
                 # Check this page for new dockets
                 page_new_count = 0
                 for docket in page_dockets:
-                    docket_number = docket.get('docket_number', '')
-                    if docket_number and docket_number not in existing_dockets:
+                    docket_id = docket.get('id', '')
+                    if docket_id and docket_id not in existing_dockets:
                         new_dockets.append(docket)
                         page_new_count += 1
                         
@@ -371,6 +385,7 @@ class LegalDocumentPipeline:
         
         return final_new_dockets
 
+
     def _fix_chunk_overlaps(self, chunks: List[str]) -> List[str]:
         """
         Fix chunk overlaps to ensure they start and end at proper sentence boundaries.
@@ -399,6 +414,7 @@ class LegalDocumentPipeline:
         
         return fixed_chunks
     
+
     def _fix_chunk_start(self, chunk: str) -> str:
         """Fix the start of a chunk to begin at a proper sentence boundary."""
         if not chunk:
@@ -428,6 +444,7 @@ class LegalDocumentPipeline:
         # If no good boundary found, return as-is (better than losing content)
         return chunk
     
+
     def _fix_chunk_end(self, chunk: str) -> str:
         """Fix the end of a chunk to end at a complete sentence."""
         if not chunk:
@@ -459,6 +476,7 @@ class LegalDocumentPipeline:
         # As fallback, return as-is
         return chunk
     
+
     def _starts_at_sentence_boundary(self, text: str) -> bool:
         """Check if text starts at a natural sentence boundary."""
         if not text:
@@ -481,18 +499,20 @@ class LegalDocumentPipeline:
             
         return False
     
-    def _fetch_docket_documents(self, docket: Dict[str, Any], court: str) -> List[Dict[str, Any]]:
-        """Fetch and process documents for a specific docket object."""
-        
+
+    def _fetch_docket_clusters_and_opinions(self, docket: Dict[str, Any], court: str, vector_processor=None) -> List[Dict[str, Any]]:
+        """Fetch and process all clusters and opinions for a specific docket object."""
+
         load_dotenv()
         CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
         HEADERS = {'Authorization': f'Token {CASELAW_API_KEY}'} if CASELAW_API_KEY else {}
         
-        documents = []
-        docket_number = docket.get('docket_number', '')
+        opinions = []
+        clusters = []
+        docket_id = docket.get('id', '')
         
-        logger.info(f"📥 Fetching documents for docket {docket_number}")
-        
+        logger.info(f"📥 Fetching clusters and opinions for docket {docket_id}")
+
         # Process clusters and opinions from the docket
         for cluster_url in docket.get("clusters", []):
             try:
@@ -500,7 +520,9 @@ class LegalDocumentPipeline:
                 cluster_resp = requests.get(cluster_url, headers=HEADERS, timeout=30)
                 cluster_resp.raise_for_status()
                 cluster = cluster_resp.json()
-                
+                clusters.append(cluster)
+                cluster_id = cluster.get('id', '')
+
                 for opinion_url in cluster.get("sub_opinions", []):
                     try:
                         logger.debug(f"Processing opinion: {opinion_url}")
@@ -508,11 +530,17 @@ class LegalDocumentPipeline:
                         opinion_resp.raise_for_status()
                         opinion = opinion_resp.json()
                         
-                        # Extract text from available fields (in priority order)
+                        # Extract text from available fields in order of recommendation
                         raw_text = None
                         source_field = None
-                        for field in ['html_columbia', 'html_lawbox', 'html_anon_2020', 
-                                     'html_with_citations', 'html', 'plain_text']:
+                        for field in [
+                            'html_with_citations',
+                            'plain_text',
+                            'html_columbia',
+                            'html_lawbox',
+                            'html_anon_2020',
+                            'html'
+                        ]:
                             if opinion.get(field):
                                 raw_text = opinion[field]
                                 source_field = field
@@ -524,15 +552,16 @@ class LegalDocumentPipeline:
                         
                         # Process text using existing enhanced processing
                         try:
-                            processed = enhanced_text_processing(raw_text)
+                            processed = vector_processor.enhanced_text_processing(raw_text)
                             
-                            document = {
-                                "id": opinion.get("id"),
-                                "docket_number": docket_number,
+                            opinion = {
+                                "docket_id": docket_id,
+                                "cluster_id": cluster_id,
+                                "opinion_id": opinion.get("id"),
                                 "case_name": cluster.get("case_name", "Unknown Case"),
                                 "court_id": court,
                                 "judges": cluster.get("judges", ""),
-                                "author": opinion.get("author_str", ""),
+                                "author": opinion.get("author_id", ""),
                                 "opinion_type": opinion.get("type", "unknown"),
                                 "date_filed": cluster.get("date_filed"),
                                 "precedential_status": cluster.get("precedential_status"),
@@ -543,11 +572,12 @@ class LegalDocumentPipeline:
                                 "citations": processed['citations'],
                                 "legal_entities": processed['legal_entities'],
                                 "text_stats": processed['text_stats'],
-                                "processing_timestamp": datetime.now().isoformat(),
+                                "date_created": opinion.get("date_created"),
+                                "date_modified": opinion.get("date_modified"),
                                 "ready_for_chunking": True
                             }
                             
-                            documents.append(document)
+                            opinions.append(opinion)
                             logger.debug(f"Successfully processed opinion {opinion.get('id')}")
                             
                         except Exception as e:
@@ -561,9 +591,9 @@ class LegalDocumentPipeline:
             except Exception as e:
                 logger.warning(f"Failed to fetch cluster {cluster_url}: {e}")
                 continue
-        
-        logger.info(f"📄 Found {len(documents)} documents in docket {docket_number}")
-        return documents
+
+        logger.info(f"📄 Found {len(opinions)} opinions and {len(clusters)} clusters in docket {docket_id}")
+        return clusters, opinions
 
 def main():
     parser = argparse.ArgumentParser(

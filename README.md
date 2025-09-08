@@ -128,7 +128,7 @@ Tasks to be implemented in future iterations:
 - Allow users to use different embedding models and llms from Legal BERT which is currently being used
 - Add test suite for pipeline components
 - Implement linting and type checking configuration
-- Enable batch processing when multiple dockets are requested 
+- Enable batch processing when large amounts (>20) dockets are requested 
 
 ## 🤝 Contributing
 
