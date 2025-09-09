@@ -64,7 +64,7 @@ class LegalDocumentPipeline:
         status = {
             'working_dir': str(self.working_dir),
             'files': [str(f) for f in self.working_dir.glob("*")],
-            'configuration': self.config.dict()
+            'configuration': self.config.get_summary()
         }
         return status
 

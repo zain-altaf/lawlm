@@ -1,12 +1,12 @@
 # Legal Document Processing Pipeline
 
-A robust legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant (Local or Cloud) for semantic search. The system uses Legal BERT for understanding legal text and BGE embeddings for vector representations.
+A legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant (Local or Cloud) for semantic search. The system uses BGE embeddings for vector representations.
 
 ## 🎯 Overview
 
 This pipeline provides core functionality for legal document processing and retrieval:
 
-- **Data Ingestion**: Fetches legal cases from CourtListener API with batch processing support
+- **Data Ingestion**: Fetches legal cases from CourtListener API
 - **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with boundary and text overlap across chunks.
 - **Vector Processing**: Creates embeddings using BGE models (default is BAAI/bge-small-en-v1.5)
 - **Storage**: Qdrant vector database (local or cloud) with semantic search capabilities
@@ -22,9 +22,9 @@ lawlm/
 ├── config.py                   # Configuration management
 ├── vector_processor.py         # Text extraction, deduplication logic for existing records, and vector processing 
 ├── legal_rag_query.py          # RAG system for querying the vector database in command line
-├── manage_qdrant.sh            # This helps you quickly start up qdrant locally without Docker
+├── manage_qdrant.sh            # This helps you quickly start up qdrant locally via Docker
 ├── data/                       # Working directory for pipeline files (created after main.py is run)
-├── qdrant_storage/             # Local Qdrant storage (created if Qdrant is run locally)
+├── qdrant_storage/             # Local Qdrant storage (created if Qdrant is run locally and after main.py is run)
 ```
 
 ## 🚀 Quick Start
@@ -65,7 +65,7 @@ Configure your `.env` file with the required credentials (follow .env.template f
 
 #### Using Qdrant locally with a Docker Container
 ```bash
-# Enable qdrant usage locally
+# Enable qdrant usage locally via Docker
 ./manage_qdrant.sh start # Starts local instance
 
 ./manage_qdrant.sh stop # Stops the local instance
@@ -85,15 +85,34 @@ Configure your `.env` file with the required credentials (follow .env.template f
 # Run complete pipeline (NOTE: schema for scotus works. Not tested for other courts at this time)
 python main.py --court scotus --num-dockets 5
 
-# Check pipeline status
+# Check pipeline status (including key configurations)
 python main.py --status
 ```
+#### Using Qdrant cloud
 
-##### Running legal_rag_query.py (Note you need to be connected to Qdrant and have at least 1 record added)
+Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME. This will ensure the switch from local to cloud upload. **NOTE**: Make sure you shut down any local qdrant with: 
+
+```bash
+./manage_qdrant.sh stop 
+```
+
+And then you can run:
+```bash
+python main.py --court scotus --num-dockets 5
+```
+
+And Qdrant cloud will recieve the text chunks.
+
+##### Running legal_rag_query.py
+
+Prerequisites: 
+1. Ensure you have a working OPENAI_API_KEY in .env.
+2. Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME. 
+3. Ensure there are at least 5-10 dockets in Qdrant cloud for better semantic search prior to querying OPEN AI. 
 
 ```bash
 # Query the vector database
-python legal_rag_query.py "Can you tell me about the case Noem v. Vasquez Perdomo"
+python legal_rag_query.py --query "Can you tell me about the case Noem v. Vasquez Perdomo"
 ```
 
 ## 🔧 Important Implementation Details
@@ -111,9 +130,10 @@ python legal_rag_query.py "Can you tell me about the case Noem v. Vasquez Perdom
 Tasks to be implemented in future iterations:
 
 - Create a hybrid search method in pipeline for enhanced querying in RAG
-- Allow users to use different embedding models and llms from Legal BERT which is currently being used
+- Allow users to use different embedding models and llms for vector embedding and querying
 - Add test suite for pipeline components
-- Add webhooks so that newer cases then present trigger auto updates to qdrant
+- Use CourtListeners webhook to pull newer cases and auto update qdrant
+- Implement cron jobs/orchestrators to automate ingestion cycles daily
 - Enable batch processing when large amounts (>20) dockets are requested 
 
 ## 🤝 Contributing

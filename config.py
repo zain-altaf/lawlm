@@ -276,7 +276,9 @@ class PipelineConfig:
             'data_ingestion': {
                 'api_configured': bool(self.data_ingestion.api_key),
                 'timeout': self.data_ingestion.timeout_seconds,
-                'min_text_length': self.data_ingestion.min_text_length
+                'min_text_length': self.data_ingestion.min_text_length,
+                'court': self.data_ingestion.court,
+                'num_dockets': self.data_ingestion.num_dockets
             },
             'text_chunking': {
                 'splitter_type': 'RecursiveCharacterTextSplitter',
@@ -285,18 +287,11 @@ class PipelineConfig:
                 'min_chunk_size_chars': self.text_splitter.min_chunk_size_chars,
                 'quality_threshold': self.text_splitter.quality_threshold
             },
-            'batch_processing': {
-                'enabled': self.batch_processing.enable_batch_processing,
-                'default_batch_size': self.batch_processing.default_batch_size,
-                'max_batch_size': self.batch_processing.max_batch_size,
-                'vector_batch_size': self.batch_processing.vector_processing_batch_size,
-                'checkpoint_interval': self.batch_processing.checkpoint_interval
-            },
-            'hybrid_processing': {
+            'vector_processing': {
                 'embedding_model': self.vector_processing.embedding_model,
                 'batch_size': self.vector_processing.batch_size,
                 'device': self.vector_processing.device,
-                'search_capabilities': 'semantic + keyword (RRF fusion)'
+                'collection_name': self.vector_processing.collection_name_vector
             },
             'qdrant': {
                 'url': self.qdrant.url,
