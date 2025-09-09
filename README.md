@@ -22,8 +22,9 @@ lawlm/
 ├── config.py                   # Configuration management
 ├── vector_processor.py         # Text extraction, deduplication logic for existing records, and vector processing 
 ├── legal_rag_query.py          # RAG system for querying the vector database in command line
-├── data/                       # Working directory for pipeline files
-├── qdrant_storage/             # Local Qdrant storage
+├── manage_qdrant.sh            # This helps you quickly start up qdrant locally without Docker
+├── data/                       # Working directory for pipeline files (created after main.py is run)
+├── qdrant_storage/             # Local Qdrant storage (created if Qdrant is run locally)
 ```
 
 ## 🚀 Quick Start
@@ -58,32 +59,31 @@ cp .env.template .env
 
 ### Environment Configuration
 
-Configure your `.env` file with the required credentials:
+Configure your `.env` file with the required credentials (follow .env.template for more information)
 
-```bash
-# Required
-CASELAW_API_KEY=your_courtlistener_api_key_here
-QDRANT_URL=your_qdrant_url_here # if using cloud
-QDRANT_API_KEY=your_qdrant_api_key_here  # if using cloud
-```
 ### Running this Repository:
 
-#### Option 1: Run Docker Container (Note: This might take a while to build)
-
+#### Using Qdrant locally with a Docker Container
 ```bash
-docker compose up --build
+# Enable qdrant usage locally
+./manage_qdrant.sh start # Starts local instance
+
+./manage_qdrant.sh stop # Stops the local instance
+
+./manage_qdrant.sh restart # Restarts local instance
+
+./manage_qdrant.sh status # Checks on Docker status and runs health check
+
+./manage_qdrant.sh logs # Displays the logs from the container. Press Ctrl + C to exit
+
+./manage_qdrant.sh clean # Deletes all data from /qdrant_storage
+
+./manage_qdrant.sh help # Displays the list of commands and helpful information
 ```
 
-#### Option 2: Run Scripts in Isolation
-
-##### Running main.py
-
 ```bash
-# Run complete pipeline (incremental processing)
+# Run complete pipeline (NOTE: schema for scotus works. Not tested for other courts at this time)
 python main.py --court scotus --num-dockets 5
-
-# Process larger dataset
-python main.py --court scotus --num-dockets 50
 
 # Check pipeline status
 python main.py --status
@@ -93,17 +93,7 @@ python main.py --status
 
 ```bash
 # Query the vector database
-python legal_rag_query.py "Can you tell me about Brown v. Board of Education?"
-```
-
-##### Running config.py
-
-```bash
-# Validate configuration
-python config.py --validate
-
-# View configuration summary
-python config.py --summary
+python legal_rag_query.py "Can you tell me about the case Noem v. Vasquez Perdomo"
 ```
 
 ## 🔧 Important Implementation Details
@@ -114,11 +104,7 @@ python config.py --summary
 
 4. **Processing Mode**: Uses incremental processing - processes each docket/batch completely (fetch → chunk → vectorize → upload) before moving to the next.
 
-5. **Cursor-Based Pagination**: Uses CourtListener API's cursor pagination instead of page numbers, enabling reliable access to 500k+ historical SCOTUS dockets without ordering issues.
-
-6. **Smart Deduplication**: Automatically detects and skips duplicate documents by docket number and document id (prioritizing docket number), with smart pagination that starts from unprocessed content.
-
-7. **Error Handling**: Comprehensive error handling with detailed logging. Saves progress after each docket/batch.
+5. **Cursor-Based Pagination**: Uses CourtListener API's cursor pagination instead of page numbers, enabling reliable access to ~500k historical SCOTUS dockets without ordering issues.
 
 ## 🔄 Open Tasks / TODO
 
@@ -127,7 +113,7 @@ Tasks to be implemented in future iterations:
 - Create a hybrid search method in pipeline for enhanced querying in RAG
 - Allow users to use different embedding models and llms from Legal BERT which is currently being used
 - Add test suite for pipeline components
-- Implement linting and type checking configuration
+- Add webhooks so that newer cases then present trigger auto updates to qdrant
 - Enable batch processing when large amounts (>20) dockets are requested 
 
 ## 🤝 Contributing

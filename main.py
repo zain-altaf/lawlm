@@ -4,28 +4,25 @@ Unified Legal Document Processing Pipeline
 
 This module orchestrates the complete pipeline:
 1. Data ingestion from CourtListener API
-2. Chunking (simple, not semantic)
+2. Chunking of legal texts with overlap
 3. Vector processing with BGE embeddings
-4. Hybrid search index creation
 
 Provides a single entry point for the entire processing workflow.
 """
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
 from pathlib import Path
 from datetime import datetime
 import logging
 import argparse
 import json
-import re
-import uuid
 import requests
 import os
 from dotenv import load_dotenv
 
-# Import our processing modules
+# Import processing modules
 from config import PipelineConfig, load_config
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_text_splitters import RecursiveCharacterTextSplitter as NewRecursiveCharacterTextSplitter
+
 
 # Handle vector processor import gracefully
 try:
@@ -61,6 +58,7 @@ class LegalDocumentPipeline:
         logger.info(f"📂 Working directory: {self.working_dir}")
         logger.info(f"🤖 Embedding model: {self.config.vector_processing.embedding_model}")
 
+
     def get_pipeline_status(self) -> Dict[str, Any]:
         """Get current pipeline status and available data."""
         status = {
@@ -70,17 +68,19 @@ class LegalDocumentPipeline:
         }
         return status
 
+
     def run_pipeline(self) -> Dict[str, Any]:
         """
         Run the legal document processing pipeline.
-        Process each docket completely before moving to next (incremental processing).
-        Includes smart pagination and deduplication.
+        Fetch existing dockets to prevent duplication.
+        Process new dockets only.
+        Includes smart pagination for efficient API calls.
         """
         logger.info(f"🚀 Starting legal document processing pipeline")
         logger.info(f"🏛️ Court: {self.config.data_ingestion.court}, Dockets: {self.config.data_ingestion.num_dockets}")
         start_time = datetime.now()
         
-        # Initialize vector processor with deduplication support
+        # Initialize vector processor
         vector_processor = None
         if VECTOR_PROCESSOR_AVAILABLE and self.config.vector_processing.collection_name_vector:
             vector_processor = EnhancedVectorProcessor(
@@ -112,8 +112,12 @@ class LegalDocumentPipeline:
         if vector_processor:
             existing_dockets = vector_processor.get_existing_docket_ids()
             logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
-        
-        breakpoint()
+
+        # This will improve pagination
+        if len(existing_dockets) == 0:
+            qdrant_id = 1
+        else:
+            qdrant_id = len(existing_dockets) + 1
 
         # Stats tracking
         stats = {
@@ -133,11 +137,9 @@ class LegalDocumentPipeline:
             new_dockets = self._fetch_all_dockets_paginated(
                 self.config.data_ingestion.court, 
                 self.config.data_ingestion.num_dockets,
-                existing_dockets
+                existing_dockets,
+                qdrant_id
             )
-
-            docket_ids = [docket.get('id') for docket in new_dockets if 'id' in docket]
-            breakpoint()
 
             stats['dockets_fetched'] = len(new_dockets)
             stats['duplicates_skipped'] = 0
@@ -187,6 +189,7 @@ class LegalDocumentPipeline:
                                 continue
 
                             chunk = {
+                                "id": qdrant_id,
                                 "docket_id": docket_id,
                                 "cluster_id": op.get('cluster_id', ''),
                                 "opinion_id": op.get('opinion_id', ''),
@@ -211,7 +214,7 @@ class LegalDocumentPipeline:
                             }
 
                             all_chunks.append(chunk)
-                    
+                                            
                     stats['chunks_created'] += len(all_chunks)
                     
                     # Vectorize and upload immediately
@@ -234,11 +237,14 @@ class LegalDocumentPipeline:
                     
                     stats['dockets_processed'] += 1
                     logger.info(f"✅ Docket {docket_id}: {len(docket.get('clusters', []))} clusters, {len(docket_opinions)} opinions, {len(all_chunks)} chunks")
+                
 
                 except Exception as e:
                     logger.error(f"❌ Error processing docket {docket_id}: {e}")
                     stats['errors'].append({'docket': docket_id, 'error': str(e)})
 
+                qdrant_id += 1  # Increment for next docket
+            
             # Final summary
             duration = (datetime.now() - start_time).total_seconds()
             
@@ -277,10 +283,10 @@ class LegalDocumentPipeline:
             raise
 
 
-    def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
+    def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set, qdrant_id: int = 1) -> List[Dict[str, Any]]:
         """
-        Fetch dockets using linear pagination, checking each docket against existing ones.
-        More reliable than calculated page skipping since API ordering may not be guaranteed.
+        Fetch dockets using cursor-based pagination starting from newest first.
+        Uses qdrant_id to calculate the starting page position efficiently.
         """
         
         load_dotenv()
@@ -292,14 +298,22 @@ class LegalDocumentPipeline:
         page_size = 200
         consecutive_empty_pages = 0
         max_consecutive_empty = 50
-
-        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (oldest first)...")
+        
+        # Calculate starting page based on qdrant_id
+        # If qdrant_id is 101, we want to skip the first 100 dockets
+        skip_count = max(0, qdrant_id - 1)
+        target_start_page = (skip_count // page_size) + 1
+        
+        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (newest first)...")
         logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
+        logger.info(f"📊 Starting from qdrant_id {qdrant_id}, will skip {skip_count} dockets")
+        logger.info(f"📄 Target starting page: {target_start_page}")
         
         base_url = "https://www.courtlistener.com/api/rest/v4/dockets/"
         
-        # Start with cursor-based pagination to access older dockets
+        # Start with cursor-based pagination to access newer dockets first
         cursor = None
+        current_position = 0  # Track how many dockets we've seen total
         
         while len(new_dockets) < num_dockets:
             page_count += 1
@@ -309,7 +323,7 @@ class LegalDocumentPipeline:
             try:
                 params = {
                     "court": court,
-                    "ordering": "id"  # Oldest dockets first (to access unprocessed historical data)
+                    "ordering": "-id"  # Newest dockets first
                 }
                 if cursor:
                     params["cursor"] = cursor
@@ -338,9 +352,15 @@ class LegalDocumentPipeline:
                 else:
                     cursor = None
                 
-                # Check this page for new dockets
+                # Check this page for new dockets, considering our starting position
                 page_new_count = 0
                 for docket in page_dockets:
+                    current_position += 1
+                    
+                    # Skip dockets until we reach our target starting position
+                    if current_position < qdrant_id:
+                        continue
+                        
                     docket_id = docket.get('id', '')
                     if docket_id and docket_id not in existing_dockets:
                         new_dockets.append(docket)
@@ -350,7 +370,7 @@ class LegalDocumentPipeline:
                         if len(new_dockets) >= num_dockets:
                             break
                 
-                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (total new: {len(new_dockets)})")
+                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (position: {current_position}, total new: {len(new_dockets)})")
                 
                 # Track consecutive empty pages
                 if page_new_count == 0:
@@ -397,7 +417,7 @@ class LegalDocumentPipeline:
         
         fixed_chunks = []
         
-        for i, chunk in enumerate(chunks):
+        for chunk in chunks:
             chunk = chunk.strip()
             if not chunk or len(chunk) < 50:
                 continue

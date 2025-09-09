@@ -11,6 +11,8 @@ import os
 import json
 import logging
 import gc
+import subprocess
+import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
@@ -92,7 +94,7 @@ class EnhancedVectorProcessor:
             # Check if we have API key for cloud authentication
             api_key = os.getenv("QDRANT_API_KEY")
             
-            if api_key:
+            if api_key and "cloud.qdrant.io" in self.qdrant_url:
                 # Use API key for cloud authentication
                 client = QdrantClient(
                     url=self.qdrant_url,
@@ -323,6 +325,7 @@ class EnhancedVectorProcessor:
                 
                 # Create payload with all chunk metadata including extracted entities
                 payload = {
+                    'id': chunk.get('id'),
                     'chunk_id': chunk.get('chunk_id'),
                     'docket_id': chunk.get('docket_id', ''),
                     'cluster_id': chunk.get('cluster_id', ''),
@@ -467,35 +470,3 @@ class EnhancedVectorProcessor:
         except Exception as e:
             logger.error(f"❌ Semantic search failed: {e}")
             raise
-
-
-# This main function can be run in isolation to understand how the processor works
-def main():
-    """Command line interface for chunk vector processing."""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Create vector embeddings for legal document chunks')
-    parser.add_argument('chunks_file', help='Input JSON file with semantic chunks')
-    parser.add_argument('--model', default='BAAI/bge-small-en-v1.5', help='Embedding model to use')
-    parser.add_argument('--collection', default='caselaw-chunks-vector', help='Qdrant collection name')
-    parser.add_argument('--qdrant_url', default='http://localhost:6333', help='Qdrant server URL')
-    
-    args = parser.parse_args()
-    
-    # Initialize processor
-    processor = EnhancedVectorProcessor(
-        model_name=args.model,
-        collection_name=args.collection,
-        qdrant_url=args.qdrant_url
-    )
-    
-    # Process chunks
-    collection_name = processor.process_documents_from_file(args.chunks_file)
-    
-    print(f"\n🎉 Vector processing complete!")
-    print(f"Collection: {collection_name}")
-    print(f"Ready for hybrid search queries!")
-
-
-if __name__ == "__main__":
-    main()
