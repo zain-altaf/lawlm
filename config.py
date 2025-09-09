@@ -58,15 +58,11 @@ class VectorProcessingConfig:
     batch_size: int = 50
     memory_cleanup_frequency: int = 100
     device: str = "auto"
-    collection_name_vector: str = "caselaw-chunks-hybrid"
+    collection_name_vector: str = "caselaw-chunks"
     
     def __post_init__(self):
         if self.device == "auto":
-            try:
-                import torch
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                self.device = "cpu"
+            self.device = "cpu"  # Force CPU-only processing
 
 
 @dataclass
@@ -130,7 +126,6 @@ class MonitoringConfig:
     log_performance_metrics: bool = True
     save_processing_summary: bool = True
     alert_memory_threshold_mb: float = 8192  # 8GB
-    alert_gpu_memory_threshold_mb: float = 10240  # 10GB
 
 
 class PipelineConfig:
@@ -281,7 +276,9 @@ class PipelineConfig:
             'data_ingestion': {
                 'api_configured': bool(self.data_ingestion.api_key),
                 'timeout': self.data_ingestion.timeout_seconds,
-                'min_text_length': self.data_ingestion.min_text_length
+                'min_text_length': self.data_ingestion.min_text_length,
+                'court': self.data_ingestion.court,
+                'num_dockets': self.data_ingestion.num_dockets
             },
             'text_chunking': {
                 'splitter_type': 'RecursiveCharacterTextSplitter',
@@ -290,18 +287,11 @@ class PipelineConfig:
                 'min_chunk_size_chars': self.text_splitter.min_chunk_size_chars,
                 'quality_threshold': self.text_splitter.quality_threshold
             },
-            'batch_processing': {
-                'enabled': self.batch_processing.enable_batch_processing,
-                'default_batch_size': self.batch_processing.default_batch_size,
-                'max_batch_size': self.batch_processing.max_batch_size,
-                'vector_batch_size': self.batch_processing.vector_processing_batch_size,
-                'checkpoint_interval': self.batch_processing.checkpoint_interval
-            },
-            'hybrid_processing': {
+            'vector_processing': {
                 'embedding_model': self.vector_processing.embedding_model,
                 'batch_size': self.vector_processing.batch_size,
                 'device': self.vector_processing.device,
-                'search_capabilities': 'semantic + keyword (RRF fusion)'
+                'collection_name': self.vector_processing.collection_name_vector
             },
             'qdrant': {
                 'url': self.qdrant.url,
@@ -387,48 +377,3 @@ def set_config(config: PipelineConfig) -> None:
     """Set global configuration instance."""
     global _global_config
     _global_config = config
-
-
-if __name__ == "__main__":
-    """CLI for configuration management. This typically is not used
-    in the data ingestion scripts but can be used to check configuration
-    settings quickly in the command line"""
-
-    parser = argparse.ArgumentParser(description="Legal Document Pipeline Configuration")
-    
-    # creates config with defaults. You usually want to use this to
-    # generate a new JSON when you change the defaults of the pipeline
-    parser.add_argument('--create-default', action='store_true',
-                       help='Create default configuration file')
-    
-    # if you pass in a config file JSON
-    parser.add_argument('--config-file', default='config.json',
-                       help='Configuration file path')
-    
-    # validate a configuration that you want to pass in
-    parser.add_argument('--validate', action='store_true',
-                       help='Validate configuration')
-    
-    # check the configuration summary
-    parser.add_argument('--summary', action='store_true',
-                       help='Show configuration summary')
-    
-    args = parser.parse_args()
-    
-    if args.create_default:
-        create_default_config_file(args.config_file)
-    elif args.validate:
-        config = load_config(args.config_file)
-        issues = config.validate()
-        if not issues:
-            print("✅ Configuration is valid")
-        else:
-            print(f"❌ Found {len(issues)} configuration issues")
-            for issue in issues:
-                print(f"  {issue}")
-    elif args.summary:
-        config = load_config(args.config_file)
-        summary = config.get_summary()
-        print(json.dumps(summary, indent=2))
-    else:
-        print("Use --help for available options")

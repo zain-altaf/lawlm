@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from hybrid_indexer import EnhancedVectorProcessor
+from vector_processor import EnhancedVectorProcessor
 
 # Load environment variables
 load_dotenv()
@@ -43,7 +43,7 @@ class LegalRAGSystem:
     """Legal Retrieval-Augmented Generation System."""
     
     def __init__(self, 
-                 collection_name: str = "caselaw-chunks-hybrid",
+                 collection_name: str = "caselaw-chunks",
                  embedding_model: str = "BAAI/bge-small-en-v1.5",
                  openai_model: str = "gpt-4o-mini",
                  max_results: int = 5):
@@ -82,37 +82,26 @@ class LegalRAGSystem:
     
     def search_legal_documents(self, 
                               query: str, 
-                              search_type: str = "hybrid",
                               score_threshold: float = 0.1) -> List[Dict[str, Any]]:
         """
-        Search legal documents using hybrid or semantic search.
+        Search legal documents using semantic search.
         
         Args:
             query: User's legal query
-            search_type: "hybrid" or "semantic"
             score_threshold: Minimum relevance score
             
         Returns:
             List of relevant document chunks with metadata
         """
-        logger.info(f"🔍 Searching for: '{query}'")
-        logger.info(f"   Search type: {search_type}")
+        logger.info(f"🔍 Searching for: '{query}' (semantic search)")
         
         try:
-            if search_type == "hybrid":
-                results = self.vector_processor.hybrid_search(
-                    query=query,
-                    collection_name=self.collection_name,
-                    limit=self.max_results,
-                    score_threshold=score_threshold
-                )
-            else:  # semantic search
-                results = self.vector_processor.semantic_search(
-                    query=query,
-                    collection_name=self.collection_name,
-                    limit=self.max_results,
-                    score_threshold=score_threshold
-                )
+            results = self.vector_processor.semantic_search(
+                query=query,
+                collection_name=self.collection_name,
+                limit=self.max_results,
+                score_threshold=score_threshold
+            )
             
             logger.info(f"✅ Found {len(results)} relevant documents")
             return results
@@ -195,7 +184,6 @@ Please provide a concise 150-word summary that answers the query based on these 
     
     def query(self, 
              question: str, 
-             search_type: str = "hybrid",
              score_threshold: float = 0.1,
              show_sources: bool = True) -> Dict[str, Any]:
         """
@@ -203,7 +191,6 @@ Please provide a concise 150-word summary that answers the query based on these 
         
         Args:
             question: Legal question to answer
-            search_type: "hybrid" or "semantic"
             score_threshold: Minimum relevance score
             show_sources: Whether to include source information
             
@@ -215,7 +202,6 @@ Please provide a concise 150-word summary that answers the query based on these 
         # Step 1: Search relevant documents
         search_results = self.search_legal_documents(
             query=question,
-            search_type=search_type,
             score_threshold=score_threshold
         )
         
@@ -224,7 +210,7 @@ Please provide a concise 150-word summary that answers the query based on these 
                 "question": question,
                 "summary": "No relevant legal documents found for this query. Try rephrasing your question or using different keywords.",
                 "sources": [],
-                "search_type": search_type,
+                "search_type": "semantic",
                 "processing_time": (datetime.now() - start_time).total_seconds(),
                 "documents_found": 0
             }
@@ -256,7 +242,7 @@ Please provide a concise 150-word summary that answers the query based on these 
             "question": question,
             "summary": summary,
             "sources": sources,
-            "search_type": search_type,
+            "search_type": "semantic",
             "processing_time": processing_time,
             "documents_found": len(search_results)
         }
@@ -265,12 +251,10 @@ Please provide a concise 150-word summary that answers the query based on these 
 def main():
     """Command line interface for the Legal RAG system."""
     parser = argparse.ArgumentParser(description="Legal RAG Query System")
-    parser.add_argument("--collection", default="caselaw-chunks-hybrid", 
+    parser.add_argument("--collection", default="caselaw-chunks",
                        help="Qdrant collection name")
     parser.add_argument("--model", default="gpt-4o-mini", 
                        help="OpenAI model to use")
-    parser.add_argument("--search-type", choices=["hybrid", "semantic"], default="hybrid",
-                       help="Type of search to perform")
     parser.add_argument("--interactive", "-i", action="store_true",
                        help="Start interactive query session")
     parser.add_argument("--query", "-q", help="Single query to process")
@@ -304,7 +288,6 @@ def main():
             
             result = rag_system.query(
                 question=args.query,
-                search_type=args.search_type,
                 score_threshold=args.score_threshold
             )
             
@@ -340,7 +323,6 @@ def main():
                     
                     result = rag_system.query(
                         question=query,
-                        search_type=args.search_type,
                         score_threshold=args.score_threshold
                     )
                     
