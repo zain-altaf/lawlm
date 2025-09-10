@@ -82,7 +82,7 @@ class LegalRAGSystem:
     
     def search_legal_documents(self, 
                               query: str, 
-                              score_threshold: float = 0.1) -> List[Dict[str, Any]]:
+                              score_threshold: float = 0.4) -> List[Dict[str, Any]]:
         """
         Search legal documents using hybrid search (semantic + keyword).
         
@@ -184,7 +184,7 @@ Please provide a concise 150-word summary that answers the query based on these 
     
     def query(self, 
              question: str, 
-             score_threshold: float = 0.1,
+             score_threshold: float = 0.4,
              show_sources: bool = True) -> Dict[str, Any]:
         """
         Complete RAG query: search + generate summary.
@@ -260,7 +260,7 @@ def main():
     parser.add_argument("--query", "-q", help="Single query to process")
     parser.add_argument("--max-results", type=int, default=5,
                        help="Maximum search results to consider")
-    parser.add_argument("--score-threshold", type=float, default=0.1,
+    parser.add_argument("--score-threshold", type=float, default=0.4,
                        help="Minimum relevance score threshold")
     
     args = parser.parse_args()

@@ -90,34 +90,51 @@ class EnhancedVectorProcessor:
     
     
     def _get_qdrant_client(self) -> QdrantClient:
-        """Initialize and return Qdrant client with cloud support."""
+        """Initialize and return Qdrant client with robust local/cloud support."""
         try:
-            # Check if we have API key for cloud authentication
+            # Check USE_CLOUD flag for explicit cloud/local selection
+            use_cloud = os.getenv("USE_CLOUD", "false").lower() in ("true", "1", "yes", "on")
             api_key = os.getenv("QDRANT_API_KEY")
             
-            if api_key and "cloud.qdrant.io" in self.qdrant_url:
-                # Use API key for cloud authentication
+            if use_cloud:
+                # Force cloud usage
+                if not api_key:
+                    raise ValueError("USE_CLOUD=true but QDRANT_API_KEY is not set. Cloud authentication requires API key.")
+                
+                # Use cloud URL if available, otherwise fallback to default cloud URL
+                cloud_url = self.qdrant_url if "cloud.qdrant.io" in self.qdrant_url else os.getenv("QDRANT_CLOUD_URL")
+                if not cloud_url or "cloud.qdrant.io" not in cloud_url:
+                    raise ValueError("USE_CLOUD=true but no valid cloud URL found. Set QDRANT_URL or QDRANT_CLOUD_URL with cloud.qdrant.io domain.")
+                
                 client = QdrantClient(
-                    url=self.qdrant_url,
+                    url=cloud_url,
                     api_key=api_key,
                     timeout=30
                 )
-                logger.info(f"Connected to Qdrant Cloud at {self.qdrant_url}")
+                logger.info(f"🌐 Connected to Qdrant Cloud at {cloud_url} (USE_CLOUD=true)")
+                
             else:
-                # Local instance without API key
-                client = QdrantClient(self.qdrant_url)
-                logger.info(f"Connected to local Qdrant at {self.qdrant_url}")
+                # Force local usage or auto-detect
+                local_url = self.qdrant_url
+                
+                # If URL contains cloud domain but USE_CLOUD is false, override to local
+                if "cloud.qdrant.io" in local_url:
+                    local_url = "http://localhost:6333"
+                    logger.info(f"⚠️ Cloud URL detected but USE_CLOUD=false, switching to local: {local_url}")
+                
+                client = QdrantClient(local_url)
+                logger.info(f"🏠 Connected to local Qdrant at {local_url} (USE_CLOUD=false)")
             
             # Test connection
             client.get_collections()
             return client
             
         except Exception as e:
-            logger.error(f"Error connecting to Qdrant at {self.qdrant_url}: {e}")
+            logger.error(f"Error connecting to Qdrant: {e}")
             if "Unauthorized" in str(e) or "401" in str(e):
                 logger.error("Authentication failed. Check your QDRANT_API_KEY environment variable.")
-            elif "cloud.qdrant.io" in self.qdrant_url and not os.getenv("QDRANT_API_KEY"):
-                logger.error("Cloud URL detected but no QDRANT_API_KEY provided. Set your API key.")
+            elif use_cloud and not api_key:
+                logger.error("Cloud mode enabled but no QDRANT_API_KEY provided. Set your API key.")
             raise
     
 
@@ -276,8 +293,7 @@ class EnhancedVectorProcessor:
     def process_and_upload_chunks(self, chunks: List[Dict[str, Any]], 
                                 collection_name: Optional[str] = None) -> Dict[str, Any]:
         """
-        Process and upload a batch of chunks for a single docket to Qdrant.
-        Designed for incremental processing where each batch is uploaded immediately.
+        Process and upload chunks for a single docket to Qdrant.
         
         Args:
             chunks: List of chunks to process and upload
