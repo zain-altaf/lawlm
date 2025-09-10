@@ -392,42 +392,6 @@ class EnhancedVectorProcessor:
             }
     
     
-    def process_documents_from_file(self, chunks_file: str, 
-                                   batch_size: int = 50, 
-                                   checkpoint_interval: int = 100,
-                                   skip_duplicates: bool = True,
-                                   duplicate_check_mode: str = "document_id",
-                                   overwrite_collection: bool = False) -> str:
-        """
-        Process chunks from JSON file with duplicate detection.
-        
-        Args:
-            chunks_file: Path to JSON file with semantic chunks
-            batch_size: Number of chunks to process in each batch (default: 50)
-            checkpoint_interval: Interval for progress logging and cleanup (default: 100)
-            skip_duplicates: Whether to skip duplicate chunks (default: True)
-            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
-            overwrite_collection: Whether to delete and recreate collection (default: False)
-            
-        Returns:
-            Collection name
-        """
-        logger.info(f"📖 Loading chunks from {chunks_file}")
-        
-        with open(chunks_file, 'r', encoding='utf-8') as f:
-            chunks = json.load(f)
-        
-        logger.info(f"📊 Loaded {len(chunks)} chunks from file")
-        return self.process_chunks(
-            chunks, 
-            batch_size=batch_size, 
-            checkpoint_interval=checkpoint_interval,
-            skip_duplicates=skip_duplicates,
-            duplicate_check_mode=duplicate_check_mode,
-            overwrite_collection=overwrite_collection
-        )
-    
-    
     def semantic_search(self, query: str, collection_name: str = None, 
                        limit: int = 10, score_threshold: float = None) -> List[Dict[str, Any]]:
         """
@@ -484,3 +448,113 @@ class EnhancedVectorProcessor:
         except Exception as e:
             logger.error(f"❌ Semantic search failed: {e}")
             raise
+    
+    def hybrid_search(self, query: str, collection_name: str = None, 
+                     limit: int = 10, score_threshold: float = None) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search using Reciprocal Rank Fusion (RRF) combining dense and sparse vectors.
+        
+        Args:
+            query: Search query text
+            collection_name: Name of the collection (uses self.collection_name if not provided)
+            limit: Number of results to return
+            score_threshold: Minimum score threshold for results
+            
+        Returns:
+            List of search results with scores and metadata
+        """
+        collection = collection_name or self.collection_name
+        
+        if not self.client.collection_exists(collection):
+            raise ValueError(f"Collection '{collection}' does not exist.")
+        
+        logger.info(f"🔍 Performing hybrid search on '{collection}'")
+        logger.info(f"📊 Query: {query}")
+        
+        # Create enhanced query with BGE prefix if applicable
+        enhanced_query = self.query_prefix + query if self.query_prefix else query
+        
+        # Create dense vector for the query
+        query_vector = self.embedder.encode(enhanced_query).tolist()
+        
+        try:
+            # Perform hybrid search with RRF using prefetch
+            search_result = self.client.query_points(
+                collection_name=collection,
+                prefetch=[
+                    # Dense vector search (semantic)
+                    models.Prefetch(
+                        query=query_vector,
+                        using="bge-small",
+                        limit=(5 * limit),  # Fetch more results for better fusion
+                    ),
+                    # Sparse vector search (keyword/BM25)
+                    models.Prefetch(
+                        query=models.Document(
+                            text=query,
+                            model="Qdrant/bm25",
+                        ),
+                        using="bm25",
+                        limit=(5 * limit),  # Fetch more results for better fusion
+                    ),
+                ],
+                # Use RRF to combine the results
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False  # Don't return vectors to save bandwidth
+            )
+            
+            # Format results
+            results = []
+            for point in search_result.points:
+                result = {
+                    'id': point.id,
+                    'score': point.score,
+                    'payload': point.payload,
+                    'search_type': 'hybrid_rrf'
+                }
+                results.append(result)
+            
+            logger.info(f"✅ Hybrid search completed: {len(results)} results")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Hybrid search failed: {e}")
+            raise
+    
+    def process_documents_from_file(self, chunks_file: str, 
+                                batch_size: int = 50, 
+                                checkpoint_interval: int = 100,
+                                skip_duplicates: bool = True,
+                                duplicate_check_mode: str = "document_id",
+                                overwrite_collection: bool = False) -> str:
+        """
+        Process chunks from JSON file with duplicate detection.
+        
+        Args:
+            chunks_file: Path to JSON file with semantic chunks
+            batch_size: Number of chunks to process in each batch (default: 50)
+            checkpoint_interval: Interval for progress logging and cleanup (default: 100)
+            skip_duplicates: Whether to skip duplicate chunks (default: True)
+            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
+            overwrite_collection: Whether to delete and recreate collection (default: False)
+            
+        Returns:
+            Collection name
+        """
+        logger.info(f"📖 Loading chunks from {chunks_file}")
+        
+        with open(chunks_file, 'r', encoding='utf-8') as f:
+            chunks = json.load(f)
+        
+        logger.info(f"📊 Loaded {len(chunks)} chunks from file")
+        return self.process_chunks(
+            chunks, 
+            batch_size=batch_size, 
+            checkpoint_interval=checkpoint_interval,
+            skip_duplicates=skip_duplicates,
+            duplicate_check_mode=duplicate_check_mode,
+            overwrite_collection=overwrite_collection
+        )

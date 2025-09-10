@@ -84,7 +84,7 @@ class LegalRAGSystem:
                               query: str, 
                               score_threshold: float = 0.1) -> List[Dict[str, Any]]:
         """
-        Search legal documents using semantic search.
+        Search legal documents using hybrid search (semantic + keyword).
         
         Args:
             query: User's legal query
@@ -93,10 +93,10 @@ class LegalRAGSystem:
         Returns:
             List of relevant document chunks with metadata
         """
-        logger.info(f"🔍 Searching for: '{query}' (semantic search)")
+        logger.info(f"🔍 Searching for: '{query}' (hybrid search)")
         
         try:
-            results = self.vector_processor.semantic_search(
+            results = self.vector_processor.hybrid_search(
                 query=query,
                 collection_name=self.collection_name,
                 limit=self.max_results,
@@ -210,7 +210,7 @@ Please provide a concise 150-word summary that answers the query based on these 
                 "question": question,
                 "summary": "No relevant legal documents found for this query. Try rephrasing your question or using different keywords.",
                 "sources": [],
-                "search_type": "semantic",
+                "search_type": "hybrid_rrf",
                 "processing_time": (datetime.now() - start_time).total_seconds(),
                 "documents_found": 0
             }
@@ -242,7 +242,7 @@ Please provide a concise 150-word summary that answers the query based on these 
             "question": question,
             "summary": summary,
             "sources": sources,
-            "search_type": "semantic",
+            "search_type": "hybrid_rrf",
             "processing_time": processing_time,
             "documents_found": len(search_results)
         }
