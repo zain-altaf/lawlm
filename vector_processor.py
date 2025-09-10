@@ -6,6 +6,7 @@ BAAI/bge-small-en-v1.5 for better legal domain performance. Optimized
 for semantically chunked legal documents.
 """
 
+from http import client
 import uuid
 import os
 import json
@@ -296,10 +297,17 @@ class EnhancedVectorProcessor:
                 # Create collection with proper vector configuration
                 self.client.create_collection(
                     collection_name=collection,
-                    vectors_config=models.VectorParams(
+                    vectors_config={
+                        'bge-small': models.VectorParams(
                         size=self.vector_size,
-                        distance=models.Distance.COSINE
-                    )
+                        distance=models.Distance.COSINE,
+                        ),
+                    },
+                    sparse_vectors_config={
+                        'bm25': models.SparseVectorParams(
+                            modifier=models.Modifier.IDF,
+                        ),
+                    },
                 )
             
             # Create enhanced texts and embeddings for chunks
@@ -353,7 +361,13 @@ class EnhancedVectorProcessor:
                 
                 points.append(models.PointStruct(
                     id=point_id,
-                    vector=embedding.tolist(),
+                    vector={
+                        "bge-small": embedding.tolist(),
+                        "bm25": models.Document(
+                            text=enhanced_texts[i],
+                            model="Qdrant/bm25"
+                        ),
+                    },
                     payload=payload
                 ))
             
