@@ -38,3 +38,5 @@ logs/
 .pytest_cache/*
 
 CLAUDE.md
+
+test/*

@@ -17,6 +17,9 @@ import argparse
 import json
 import requests
 import os
+import time
+import urllib.parse
+from typing import Optional
 from dotenv import load_dotenv
 
 # Import processing modules
@@ -38,6 +41,56 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30, 
+                    max_retries: int = 3, delay: int = 5) -> Optional[Dict[str, Any]]:
+    """
+    Fetch data from URL with retry logic for 5xx server errors.
+    
+    Args:
+        url: URL to fetch
+        headers: HTTP headers to send
+        timeout: Request timeout in seconds
+        max_retries: Maximum number of retry attempts
+        delay: Seconds to wait between retries
+        
+    Returns:
+        JSON response data or None if all retries failed
+    """
+    for attempt in range(max_retries + 1):  # +1 for initial attempt
+        try:
+            response = requests.get(url, headers=headers or {}, timeout=timeout)
+            
+            # Success - return the data
+            if response.status_code == 200:
+                return response.json()
+            
+            # Client errors (4xx) - don't retry, content doesn't exist
+            elif 400 <= response.status_code < 500:
+                logger.warning(f"Client error {response.status_code} for {url} - not retrying")
+                return None
+            
+            # Server errors (5xx) - retry with delay
+            elif response.status_code >= 500:
+                if attempt < max_retries:
+                    logger.warning(f"Server error {response.status_code} for {url} - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Server error {response.status_code} for {url} - max retries exceeded")
+                    return None
+                    
+        except requests.exceptions.RequestException as e:
+            if attempt < max_retries:
+                logger.warning(f"Request exception for {url}: {e} - retrying in {delay}s")
+                time.sleep(delay)
+                continue
+            else:
+                logger.error(f"Request failed for {url} after {max_retries} retries: {e}")
+                return None
+    
+    return None
 
 class LegalDocumentPipeline:
     """
@@ -328,15 +381,21 @@ class LegalDocumentPipeline:
                 if cursor:
                     params["cursor"] = cursor
                 
-                response = requests.get(
-                    base_url,
-                    params=params,
-                    headers=HEADERS,
-                    timeout=30
-                )
-                response.raise_for_status()
+                # Construct full URL with params for retry function
+                query_string = urllib.parse.urlencode(params)
+                full_url = f"{base_url}?{query_string}"
                 
-                response_data = response.json()
+                response_data = fetch_with_retry(
+                    url=full_url,
+                    headers=HEADERS,
+                    timeout=30,
+                    max_retries=3,
+                    delay=5
+                )
+                
+                if response_data is None:
+                    logger.error(f"Failed to fetch dockets page {page_count} after retries")
+                    break
                 page_dockets = response_data.get('results', [])
                 if not page_dockets:
                     logger.warning(f"⚠️ No more dockets available from API")
@@ -345,7 +404,6 @@ class LegalDocumentPipeline:
                 # Get next cursor for continuation
                 next_url = response_data.get('next')
                 if next_url:
-                    import urllib.parse
                     parsed = urllib.parse.urlparse(next_url)
                     query_params = urllib.parse.parse_qs(parsed.query)
                     cursor = query_params.get('cursor', [None])[0]
@@ -393,8 +451,8 @@ class LegalDocumentPipeline:
                     logger.info(f"📋 Reached end of available dockets (no more pages)")
                     break
                 
-            except requests.RequestException as e:
-                logger.error(f"❌ API error on page {page_count}: {e}")
+            except Exception as e:
+                logger.error(f"❌ Unexpected error on page {page_count}: {e}")
                 break
         
         final_new_dockets = new_dockets[:num_dockets]  # Limit to exactly what was requested
@@ -537,18 +595,32 @@ class LegalDocumentPipeline:
         for cluster_url in docket.get("clusters", []):
             try:
                 logger.debug(f"Processing cluster: {cluster_url}")
-                cluster_resp = requests.get(cluster_url, headers=HEADERS, timeout=30)
-                cluster_resp.raise_for_status()
-                cluster = cluster_resp.json()
+                cluster = fetch_with_retry(
+                    url=cluster_url, 
+                    headers=HEADERS, 
+                    timeout=30,
+                    max_retries=3,
+                    delay=5
+                )
+                if cluster is None:
+                    logger.warning(f"Failed to fetch cluster {cluster_url} after retries")
+                    continue
                 clusters.append(cluster)
                 cluster_id = cluster.get('id', '')
 
                 for opinion_url in cluster.get("sub_opinions", []):
                     try:
                         logger.debug(f"Processing opinion: {opinion_url}")
-                        opinion_resp = requests.get(opinion_url, headers=HEADERS, timeout=30)
-                        opinion_resp.raise_for_status()
-                        opinion = opinion_resp.json()
+                        opinion = fetch_with_retry(
+                            url=opinion_url, 
+                            headers=HEADERS, 
+                            timeout=30,
+                            max_retries=3,
+                            delay=5
+                        )
+                        if opinion is None:
+                            logger.warning(f"Failed to fetch opinion {opinion_url} after retries")
+                            continue
                         
                         # Extract text from available fields in order of recommendation
                         raw_text = None

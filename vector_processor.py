@@ -6,6 +6,7 @@ BAAI/bge-small-en-v1.5 for better legal domain performance. Optimized
 for semantically chunked legal documents.
 """
 
+from http import client
 import uuid
 import os
 import json
@@ -89,34 +90,51 @@ class EnhancedVectorProcessor:
     
     
     def _get_qdrant_client(self) -> QdrantClient:
-        """Initialize and return Qdrant client with cloud support."""
+        """Initialize and return Qdrant client with robust local/cloud support."""
         try:
-            # Check if we have API key for cloud authentication
+            # Check USE_CLOUD flag for explicit cloud/local selection
+            use_cloud = os.getenv("USE_CLOUD", "false").lower() in ("true", "1", "yes", "on")
             api_key = os.getenv("QDRANT_API_KEY")
             
-            if api_key and "cloud.qdrant.io" in self.qdrant_url:
-                # Use API key for cloud authentication
+            if use_cloud:
+                # Force cloud usage
+                if not api_key:
+                    raise ValueError("USE_CLOUD=true but QDRANT_API_KEY is not set. Cloud authentication requires API key.")
+                
+                # Use cloud URL if available, otherwise fallback to default cloud URL
+                cloud_url = self.qdrant_url if "cloud.qdrant.io" in self.qdrant_url else os.getenv("QDRANT_CLOUD_URL")
+                if not cloud_url or "cloud.qdrant.io" not in cloud_url:
+                    raise ValueError("USE_CLOUD=true but no valid cloud URL found. Set QDRANT_URL or QDRANT_CLOUD_URL with cloud.qdrant.io domain.")
+                
                 client = QdrantClient(
-                    url=self.qdrant_url,
+                    url=cloud_url,
                     api_key=api_key,
                     timeout=30
                 )
-                logger.info(f"Connected to Qdrant Cloud at {self.qdrant_url}")
+                logger.info(f"🌐 Connected to Qdrant Cloud at {cloud_url} (USE_CLOUD=true)")
+                
             else:
-                # Local instance without API key
-                client = QdrantClient(self.qdrant_url)
-                logger.info(f"Connected to local Qdrant at {self.qdrant_url}")
+                # Force local usage or auto-detect
+                local_url = self.qdrant_url
+                
+                # If URL contains cloud domain but USE_CLOUD is false, override to local
+                if "cloud.qdrant.io" in local_url:
+                    local_url = "http://localhost:6333"
+                    logger.info(f"⚠️ Cloud URL detected but USE_CLOUD=false, switching to local: {local_url}")
+                
+                client = QdrantClient(local_url)
+                logger.info(f"🏠 Connected to local Qdrant at {local_url} (USE_CLOUD=false)")
             
             # Test connection
             client.get_collections()
             return client
             
         except Exception as e:
-            logger.error(f"Error connecting to Qdrant at {self.qdrant_url}: {e}")
+            logger.error(f"Error connecting to Qdrant: {e}")
             if "Unauthorized" in str(e) or "401" in str(e):
                 logger.error("Authentication failed. Check your QDRANT_API_KEY environment variable.")
-            elif "cloud.qdrant.io" in self.qdrant_url and not os.getenv("QDRANT_API_KEY"):
-                logger.error("Cloud URL detected but no QDRANT_API_KEY provided. Set your API key.")
+            elif use_cloud and not api_key:
+                logger.error("Cloud mode enabled but no QDRANT_API_KEY provided. Set your API key.")
             raise
     
 
@@ -275,8 +293,7 @@ class EnhancedVectorProcessor:
     def process_and_upload_chunks(self, chunks: List[Dict[str, Any]], 
                                 collection_name: Optional[str] = None) -> Dict[str, Any]:
         """
-        Process and upload a batch of chunks for a single docket to Qdrant.
-        Designed for incremental processing where each batch is uploaded immediately.
+        Process and upload chunks for a single docket to Qdrant.
         
         Args:
             chunks: List of chunks to process and upload
@@ -296,10 +313,17 @@ class EnhancedVectorProcessor:
                 # Create collection with proper vector configuration
                 self.client.create_collection(
                     collection_name=collection,
-                    vectors_config=models.VectorParams(
+                    vectors_config={
+                        'bge-small': models.VectorParams(
                         size=self.vector_size,
-                        distance=models.Distance.COSINE
-                    )
+                        distance=models.Distance.COSINE,
+                        ),
+                    },
+                    sparse_vectors_config={
+                        'bm25': models.SparseVectorParams(
+                            modifier=models.Modifier.IDF,
+                        ),
+                    },
                 )
             
             # Create enhanced texts and embeddings for chunks
@@ -353,7 +377,13 @@ class EnhancedVectorProcessor:
                 
                 points.append(models.PointStruct(
                     id=point_id,
-                    vector=embedding.tolist(),
+                    vector={
+                        "bge-small": embedding.tolist(),
+                        "bm25": models.Document(
+                            text=enhanced_texts[i],
+                            model="Qdrant/bm25"
+                        ),
+                    },
                     payload=payload
                 ))
             
@@ -376,42 +406,6 @@ class EnhancedVectorProcessor:
                 'vectors_created': 0,
                 'error': str(e)
             }
-    
-    
-    def process_documents_from_file(self, chunks_file: str, 
-                                   batch_size: int = 50, 
-                                   checkpoint_interval: int = 100,
-                                   skip_duplicates: bool = True,
-                                   duplicate_check_mode: str = "document_id",
-                                   overwrite_collection: bool = False) -> str:
-        """
-        Process chunks from JSON file with duplicate detection.
-        
-        Args:
-            chunks_file: Path to JSON file with semantic chunks
-            batch_size: Number of chunks to process in each batch (default: 50)
-            checkpoint_interval: Interval for progress logging and cleanup (default: 100)
-            skip_duplicates: Whether to skip duplicate chunks (default: True)
-            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
-            overwrite_collection: Whether to delete and recreate collection (default: False)
-            
-        Returns:
-            Collection name
-        """
-        logger.info(f"📖 Loading chunks from {chunks_file}")
-        
-        with open(chunks_file, 'r', encoding='utf-8') as f:
-            chunks = json.load(f)
-        
-        logger.info(f"📊 Loaded {len(chunks)} chunks from file")
-        return self.process_chunks(
-            chunks, 
-            batch_size=batch_size, 
-            checkpoint_interval=checkpoint_interval,
-            skip_duplicates=skip_duplicates,
-            duplicate_check_mode=duplicate_check_mode,
-            overwrite_collection=overwrite_collection
-        )
     
     
     def semantic_search(self, query: str, collection_name: str = None, 
@@ -470,3 +464,113 @@ class EnhancedVectorProcessor:
         except Exception as e:
             logger.error(f"❌ Semantic search failed: {e}")
             raise
+    
+    def hybrid_search(self, query: str, collection_name: str = None, 
+                     limit: int = 10, score_threshold: float = None) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search using Reciprocal Rank Fusion (RRF) combining dense and sparse vectors.
+        
+        Args:
+            query: Search query text
+            collection_name: Name of the collection (uses self.collection_name if not provided)
+            limit: Number of results to return
+            score_threshold: Minimum score threshold for results
+            
+        Returns:
+            List of search results with scores and metadata
+        """
+        collection = collection_name or self.collection_name
+        
+        if not self.client.collection_exists(collection):
+            raise ValueError(f"Collection '{collection}' does not exist.")
+        
+        logger.info(f"🔍 Performing hybrid search on '{collection}'")
+        logger.info(f"📊 Query: {query}")
+        
+        # Create enhanced query with BGE prefix if applicable
+        enhanced_query = self.query_prefix + query if self.query_prefix else query
+        
+        # Create dense vector for the query
+        query_vector = self.embedder.encode(enhanced_query).tolist()
+        
+        try:
+            # Perform hybrid search with RRF using prefetch
+            search_result = self.client.query_points(
+                collection_name=collection,
+                prefetch=[
+                    # Dense vector search (semantic)
+                    models.Prefetch(
+                        query=query_vector,
+                        using="bge-small",
+                        limit=(5 * limit),  # Fetch more results for better fusion
+                    ),
+                    # Sparse vector search (keyword/BM25)
+                    models.Prefetch(
+                        query=models.Document(
+                            text=query,
+                            model="Qdrant/bm25",
+                        ),
+                        using="bm25",
+                        limit=(5 * limit),  # Fetch more results for better fusion
+                    ),
+                ],
+                # Use RRF to combine the results
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False  # Don't return vectors to save bandwidth
+            )
+            
+            # Format results
+            results = []
+            for point in search_result.points:
+                result = {
+                    'id': point.id,
+                    'score': point.score,
+                    'payload': point.payload,
+                    'search_type': 'hybrid_rrf'
+                }
+                results.append(result)
+            
+            logger.info(f"✅ Hybrid search completed: {len(results)} results")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Hybrid search failed: {e}")
+            raise
+    
+    def process_documents_from_file(self, chunks_file: str, 
+                                batch_size: int = 50, 
+                                checkpoint_interval: int = 100,
+                                skip_duplicates: bool = True,
+                                duplicate_check_mode: str = "document_id",
+                                overwrite_collection: bool = False) -> str:
+        """
+        Process chunks from JSON file with duplicate detection.
+        
+        Args:
+            chunks_file: Path to JSON file with semantic chunks
+            batch_size: Number of chunks to process in each batch (default: 50)
+            checkpoint_interval: Interval for progress logging and cleanup (default: 100)
+            skip_duplicates: Whether to skip duplicate chunks (default: True)
+            duplicate_check_mode: How to check duplicates - "document_id", "docket_number", or "both"
+            overwrite_collection: Whether to delete and recreate collection (default: False)
+            
+        Returns:
+            Collection name
+        """
+        logger.info(f"📖 Loading chunks from {chunks_file}")
+        
+        with open(chunks_file, 'r', encoding='utf-8') as f:
+            chunks = json.load(f)
+        
+        logger.info(f"📊 Loaded {len(chunks)} chunks from file")
+        return self.process_chunks(
+            chunks, 
+            batch_size=batch_size, 
+            checkpoint_interval=checkpoint_interval,
+            skip_duplicates=skip_duplicates,
+            duplicate_check_mode=duplicate_check_mode,
+            overwrite_collection=overwrite_collection
+        )
