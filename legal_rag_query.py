@@ -61,10 +61,11 @@ class LegalRAGSystem:
         self.max_results = max_results
         
         # Initialize vector processor for hybrid search
+        # Let EnhancedVectorProcessor handle URL logic based on USE_CLOUD flag
         self.vector_processor = EnhancedVectorProcessor(
             model_name=embedding_model,
-            collection_name=collection_name,
-            qdrant_url=os.getenv("QDRANT_URL")
+            collection_name=collection_name
+            # qdrant_url is handled internally based on USE_CLOUD flag
         )
         
         # Check if collection exists
