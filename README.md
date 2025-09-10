@@ -1,6 +1,6 @@
 # Legal Document Processing Pipeline
 
-A legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant (Local or Cloud) for semantic search. The system uses BGE embeddings for vector representations.
+A legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant (Local or Cloud) for hybrid search. The system uses BGE embeddings for dense vector representations and BM25 for sparse vector representations.
 
 ## 🎯 Overview
 
@@ -8,8 +8,8 @@ This pipeline provides core functionality for legal document processing and retr
 
 - **Data Ingestion**: Fetches legal cases from CourtListener API
 - **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with boundary and text overlap across chunks.
-- **Vector Processing**: Creates embeddings using BGE models (default is BAAI/bge-small-en-v1.5)
-- **Storage**: Qdrant vector database (local or cloud) with semantic search capabilities
+- **Vector Processing**: Creates embeddings using BGE models (default is BAAI/bge-small-en-v1.5) and BM25 for sparse embeddings.
+- **Storage**: Qdrant vector database (local or cloud) with hybrid search capabilities
 - **Query Interface**: RAG-based legal document retrieval system available in legal_rag_query.py
 
 ## 📁 File Structure
@@ -121,15 +121,15 @@ python legal_rag_query.py --query "Can you tell me about the case Noem v. Vasque
 
 3. **Vector Storage**: Supports both local and cloud Qdrant deployments. Cloud recommended for persistence. Snapshot of local embeddings can be downloaded from qdrant for later local use or cloud upload.
 
-4. **Processing Mode**: Uses incremental processing - processes each docket/batch completely (fetch → chunk → vectorize → upload) before moving to the next.
+4. **Processing Mode**: Uses incremental processing - processes each docket (fetch → chunk → vectorize → upload) before moving to the next.
 
-5. **Cursor-Based Pagination**: Uses CourtListener API's cursor pagination instead of page numbers, enabling reliable access to ~500k historical SCOTUS dockets without ordering issues.
+5. **Cursor-Based Pagination**: Uses CourtListener API's cursor pagination, enabling reliable access to ~500k historical SCOTUS dockets without ordering issues.
 
 ## 🔄 Open Tasks / TODO
 
 Tasks to be implemented in future iterations:
 
-- Create a hybrid search method in pipeline for enhanced querying in RAG
+- ~~Create a hybrid search method in pipeline for enhanced querying in RAG~~
 - Allow users to use different embedding models and llms for vector embedding and querying
 - Add test suite for pipeline components
 - Use CourtListeners webhook to pull newer cases and auto update qdrant

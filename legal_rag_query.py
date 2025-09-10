@@ -65,7 +65,6 @@ class LegalRAGSystem:
         self.vector_processor = EnhancedVectorProcessor(
             model_name=embedding_model,
             collection_name=collection_name
-            # qdrant_url is handled internally based on USE_CLOUD flag
         )
         
         # Check if collection exists
