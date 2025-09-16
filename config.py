@@ -100,6 +100,18 @@ class QdrantConfig:
 
 
 @dataclass
+class AirflowConfig:
+    """Configuration for Airflow DAG orchestration."""
+    batch_size: int = 10           # Optimized for maximum throughput (4950 calls / 10 calls per docket)
+    total_batches: int = 1          # Single large batch per run for efficiency
+    schedule_interval_minutes: int = 12  # Run every 12 minutes for maximum throughput
+    max_active_runs: int = 1        # Ensure only one instance runs at a time
+    pool_size: int = 50             # API pool size for rate limiting
+    target_calls_per_hour: int = 4950  # Maximum API calls per hour (99% of limit)
+    soft_rate_buffer: int = 12      # Buffer for soft rate limiting
+    initial_offset: int = 0         # Starting offset for docket fetching
+
+@dataclass
 class ProcessingConfig:
     """Configuration for general processing settings."""
     working_directory: str = "data"
@@ -148,6 +160,7 @@ class PipelineConfig:
         self.qdrant = QdrantConfig()
         self.processing = ProcessingConfig()
         self.monitoring = MonitoringConfig()
+        self.airflow = AirflowConfig()
 
         # Load from file if provided (this is a JSON that you need to provide)
         if config_file and Path(config_file).exists():

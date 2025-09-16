@@ -43,18 +43,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30, 
+def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30,
                     max_retries: int = 3, delay: int = 5) -> Optional[Dict[str, Any]]:
     """
-    Fetch data from URL with retry logic for 5xx server errors.
-    
+    Fetch data from URL with retry logic for 5xx server errors and 429 rate limiting.
+
     Args:
         url: URL to fetch
         headers: HTTP headers to send
         timeout: Request timeout in seconds
         max_retries: Maximum number of retry attempts
         delay: Seconds to wait between retries
-        
+
     Returns:
         JSON response data or None if all retries failed
     """
@@ -65,8 +65,20 @@ def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30
             # Success - return the data
             if response.status_code == 200:
                 return response.json()
-            
-            # Client errors (4xx) - don't retry, content doesn't exist
+
+            # Rate limit (429) - respect Retry-After header
+            elif response.status_code == 429:
+                retry_after = int(response.headers.get('Retry-After', 60))
+                logger.warning(f"Rate limited (429) for {url} - waiting {retry_after}s before retry (attempt {attempt + 1}/{max_retries})")
+
+                if attempt < max_retries:
+                    time.sleep(retry_after)
+                    continue
+                else:
+                    logger.error(f"Rate limited for {url} - max retries exceeded")
+                    return None
+
+            # Other client errors (4xx) - don't retry, content doesn't exist
             elif 400 <= response.status_code < 500:
                 logger.warning(f"Client error {response.status_code} for {url} - not retrying")
                 return None
@@ -338,8 +350,9 @@ class LegalDocumentPipeline:
 
     def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set, qdrant_id: int = 1) -> List[Dict[str, Any]]:
         """
-        Fetch dockets using cursor-based pagination starting from newest first.
-        Uses qdrant_id to calculate the starting page position efficiently.
+        Fetch dockets using cursor-based pagination starting from oldest first.
+        This ensures consistent ordering and prevents pagination issues with new dockets.
+        Note: qdrant_id parameter is kept for compatibility but not used in pagination logic.
         """
         
         load_dotenv()
@@ -352,21 +365,14 @@ class LegalDocumentPipeline:
         consecutive_empty_pages = 0
         max_consecutive_empty = 50
         
-        # Calculate starting page based on qdrant_id
-        # If qdrant_id is 101, we want to skip the first 100 dockets
-        skip_count = max(0, qdrant_id - 1)
-        target_start_page = (skip_count // page_size) + 1
-        
-        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (newest first)...")
+        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (starting from beginning)...")
         logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
-        logger.info(f"📊 Starting from qdrant_id {qdrant_id}, will skip {skip_count} dockets")
-        logger.info(f"📄 Target starting page: {target_start_page}")
-        
+        logger.info(f"📊 Starting from the beginning with id ordering to ensure consistency")
+
         base_url = "https://www.courtlistener.com/api/rest/v4/dockets/"
-        
-        # Start with cursor-based pagination to access newer dockets first
+
+        # Start with cursor-based pagination from the beginning (oldest first)
         cursor = None
-        current_position = 0  # Track how many dockets we've seen total
         
         while len(new_dockets) < num_dockets:
             page_count += 1
@@ -376,7 +382,7 @@ class LegalDocumentPipeline:
             try:
                 params = {
                     "court": court,
-                    "ordering": "-id"  # Newest dockets first
+                    "ordering": "id"  # Oldest dockets first for consistent pagination
                 }
                 if cursor:
                     params["cursor"] = cursor
@@ -410,25 +416,19 @@ class LegalDocumentPipeline:
                 else:
                     cursor = None
                 
-                # Check this page for new dockets, considering our starting position
+                # Check this page for new dockets
                 page_new_count = 0
                 for docket in page_dockets:
-                    current_position += 1
-                    
-                    # Skip dockets until we reach our target starting position
-                    if current_position < qdrant_id:
-                        continue
-                        
                     docket_id = docket.get('id', '')
                     if docket_id and docket_id not in existing_dockets:
                         new_dockets.append(docket)
                         page_new_count += 1
-                        
+
                         # Stop if we have enough new dockets
                         if len(new_dockets) >= num_dockets:
                             break
-                
-                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (position: {current_position}, total new: {len(new_dockets)})")
+
+                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (total new: {len(new_dockets)})")
                 
                 # Track consecutive empty pages
                 if page_new_count == 0:
@@ -460,6 +460,7 @@ class LegalDocumentPipeline:
         logger.info(f"🎯 Cursor-based pagination complete:")
         logger.info(f"   📄 Pages fetched: {page_count}")
         logger.info(f"   ✨ New dockets found: {len(final_new_dockets)}")
+        logger.info(f"   📊 Ordering: oldest first (id) for consistent deduplication")
         
         return final_new_dockets
 
