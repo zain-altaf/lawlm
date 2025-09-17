@@ -177,6 +177,42 @@ fi
 echo "  Waiting for services to initialize..."
 sleep 5
 
+# Step 7.5: Start Redis Docker Container
+echo "🔧 Starting Redis Docker container for caching..."
+if docker ps | grep -q "redis-courtlistener"; then
+    echo "  ℹ️  Redis container already running"
+else
+    # Stop any existing container with the same name
+    docker stop redis-courtlistener 2>/dev/null || true
+    docker rm redis-courtlistener 2>/dev/null || true
+
+    # Start fresh Redis container
+    if docker run -d --name redis-courtlistener \
+        -p 6379:6379 \
+        --restart unless-stopped \
+        redis:7-alpine redis-server --appendonly yes; then
+        echo "✅ Redis container started successfully on port 6379"
+
+        # Wait for Redis to be ready
+        echo "  Waiting for Redis to be ready..."
+        sleep 3
+
+        # Test Redis connection
+        if docker exec redis-courtlistener redis-cli ping | grep -q "PONG"; then
+            echo "✅ Redis is responding to ping"
+        else
+            echo "⚠️  Redis may not be fully ready yet"
+        fi
+    else
+        echo "❌ Failed to start Redis container"
+    fi
+fi
+
+# Configure Airflow Redis connection
+echo "🔗 Configuring Airflow Redis connection..."
+export AIRFLOW_CONN_REDIS_DEFAULT='redis://localhost:6379/0'
+echo "✅ Redis connection configured: redis://localhost:6379/0"
+
 # Step 8: Verify Clean State
 echo "🔍 Verifying clean state..."
 

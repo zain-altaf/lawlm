@@ -7,15 +7,11 @@ Combines hybrid search (semantic + keyword) with GPT API for concise summaries.
 """
 
 import os
-import sys
 import logging
 import argparse
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from datetime import datetime
 from dotenv import load_dotenv
-
-# Add current directory to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from vector_processor import EnhancedVectorProcessor
 
@@ -26,7 +22,6 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# OpenAI client setup
 try:
     from openai import OpenAI
     openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -71,7 +66,7 @@ class LegalRAGSystem:
         if not self.vector_processor.client.collection_exists(collection_name):
             raise ValueError(f"Collection '{collection_name}' not found. Run the pipeline first to create it.")
         
-        logger.info(f"✅ Legal RAG System initialized")
+        logger.info(f"Legal RAG System initialized")
         logger.info(f"   Collection: {collection_name}")
         logger.info(f"   Embedding model: {embedding_model}")
         logger.info(f"   OpenAI model: {openai_model}")
@@ -103,7 +98,7 @@ class LegalRAGSystem:
                 score_threshold=score_threshold
             )
             
-            logger.info(f"✅ Found {len(results)} relevant documents")
+            logger.info(f"Found {len(results)} relevant documents")
             return results
             
         except Exception as e:
@@ -267,11 +262,11 @@ def main():
     
     # Check required environment variables
     if not os.getenv("QDRANT_URL"):
-        print(" Error: QDRANT_URL environment variable not set")
+        print("Error: QDRANT_URL environment variable not set")
         return 1
-    
+
     if not os.getenv("OPENAI_API_KEY"):
-        print(" Warning: OPENAI_API_KEY not set. Summaries will be unavailable.")
+        print("Warning: OPENAI_API_KEY not set. Summaries will be unavailable.")
     
     try:
         # Initialize RAG system

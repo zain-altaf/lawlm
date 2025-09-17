@@ -26,6 +26,12 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 from config import PipelineConfig, load_config
 
+# Configure logging first
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Handle vector processor import gracefully
 try:
@@ -35,12 +41,6 @@ except ImportError as e:
     logger.warning(f"Vector processing not available ({e}). Only chunking will work.")
     EnhancedVectorProcessor = None
     VECTOR_PROCESSOR_AVAILABLE = False
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 
 def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30,
@@ -196,10 +196,9 @@ class LegalDocumentPipeline:
             # Step 1: Smart pagination that fetches NEW dockets directly (deduplication built-in)
             logger.info(f"📋 Smart fetching dockets with built-in deduplication...")
             new_dockets = self._fetch_all_dockets_paginated(
-                self.config.data_ingestion.court, 
+                self.config.data_ingestion.court,
                 self.config.data_ingestion.num_dockets,
-                existing_dockets,
-                qdrant_id
+                existing_dockets
             )
 
             stats['dockets_fetched'] = len(new_dockets)
@@ -343,11 +342,10 @@ class LegalDocumentPipeline:
             raise
 
 
-    def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set, qdrant_id: int = 1) -> List[Dict[str, Any]]:
+    def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
         """
         Fetch dockets using cursor-based pagination starting from oldest first.
         This ensures consistent ordering and prevents pagination issues with new dockets.
-        Note: qdrant_id parameter is kept for compatibility but not used in pagination logic.
         """
 
         load_dotenv()

@@ -17,16 +17,8 @@ import numpy as np
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient, models
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 from sentence_transformers import SentenceTransformer
-
-# Handle torch import gracefully
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: PyTorch not available ({e}). CPU-only processing will be used.")
-    torch = None
-    TORCH_AVAILABLE = False
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -167,8 +159,46 @@ class EnhancedVectorProcessor:
         except Exception as e:
             logger.warning(f"Could not get existing docket numbers: {e}")
             return set()
-    
-    
+
+    def remove_docket_from_collection(self, docket_id: int) -> bool:
+        """
+        Remove all points associated with a specific docket ID from the collection.
+
+        Args:
+            docket_id: The docket ID to remove
+
+        Returns:
+            bool: True if removal was successful, False otherwise
+        """
+        try:
+            # Create filter to match the docket_id
+
+            filter_condition = Filter(
+                must=[
+                    FieldCondition(
+                        key="docket_id",
+                        match=MatchValue(value=docket_id)
+                    )
+                ]
+            )
+
+            # Delete points matching the filter
+            result = self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=filter_condition
+            )
+
+            if result:
+                logger.info(f"Successfully removed all points for docket ID {docket_id}")
+                return True
+            else:
+                logger.warning(f"No points found for docket ID {docket_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to remove docket {docket_id} from collection: {e}")
+            return False
+
     def extract_legal_info(self, text: str) -> Dict[str, Any]:
         """Extract legal citations and entities from text using regex patterns."""
         # Initialize result structure

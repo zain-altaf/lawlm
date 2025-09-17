@@ -15,8 +15,13 @@ transformers==4.54.1
 apache-airflow[postgres,celery]==2.7.3
 Flask-Limiter==3.5.0
 apache-airflow-providers-postgres==5.7.1
+apache-airflow-providers-redis==3.4.0
 backoff==2.2.1
 psycopg2-binary==2.9.7
 sqlalchemy==1.4.53
 werkzeug==2.3.7
-flask==2.3.3
+flask>=2.2,<2.3
+
+# Redis dependencies for caching and rate limiting
+redis>=4.5.2,<5.0.0
+hiredis==2.2.3

@@ -47,8 +47,6 @@ class TextSplitterConfig:
     overlap_chars: int = 300
     min_chunk_size_chars: int = 400
     quality_threshold: float = 0.3
-    separators: Optional[List[str]] = None
-
 
 
 @dataclass
@@ -95,6 +93,67 @@ class QdrantConfig:
 
 
 @dataclass
+class RedisConfig:
+    """Configuration for Redis caching and rate limiting."""
+    host: str = "localhost"
+    port: int = 6379
+    db: int = 0
+    password: Optional[str] = None
+    ssl: bool = False
+    connection_pool_max_connections: int = 20
+    socket_timeout: int = 5
+    socket_connect_timeout: int = 5
+    retry_on_timeout: bool = True
+    decode_responses: bool = True
+
+    # Rate limiting specific settings
+    rate_limit_key_ttl_hours: int = 25
+    pipeline_state_ttl_hours: int = 25
+    failed_dockets_ttl_hours: int = 72
+    cleanup_interval_hours: int = 48
+
+    # Performance tuning
+    enable_atomic_operations: bool = True
+    enable_lua_scripts: bool = True
+    enable_pipeline_transactions: bool = True
+
+    def __post_init__(self):
+        # Check environment variables for Redis configuration
+        env_host = os.getenv("REDIS_HOST")
+        if env_host:
+            self.host = env_host
+
+        env_port = os.getenv("REDIS_PORT")
+        if env_port:
+            self.port = int(env_port)
+
+        env_db = os.getenv("REDIS_DB")
+        if env_db:
+            self.db = int(env_db)
+
+        env_password = os.getenv("REDIS_PASSWORD")
+        if env_password:
+            self.password = env_password
+
+        env_ssl = os.getenv("REDIS_SSL")
+        if env_ssl and env_ssl.lower() in ('true', '1', 'yes'):
+            self.ssl = True
+
+        # Auto-detect Redis cloud services
+        if "redis.cloud" in self.host or "redislabs" in self.host:
+            self.ssl = True
+
+        # Validate configuration
+        if self.port < 1 or self.port > 65535:
+            logger.warning(f"Invalid Redis port {self.port}, using default 6379")
+            self.port = 6379
+
+        if self.db < 0:
+            logger.warning(f"Invalid Redis database {self.db}, using default 0")
+            self.db = 0
+
+
+@dataclass
 class AirflowConfig:
     """Configuration for Airflow DAG orchestration."""
     batch_size: int = 495
@@ -105,6 +164,11 @@ class AirflowConfig:
     target_calls_per_hour: int = 4950
     soft_rate_buffer: int = 12
     initial_offset: int = 0
+
+    # Redis integration settings
+    enable_redis_rate_limiting: bool = True
+    redis_fallback_to_postgres: bool = True
+    redis_connection_id: str = "redis_default"
 
 @dataclass
 class ProcessingConfig:
@@ -150,6 +214,7 @@ class PipelineConfig:
         self.text_splitter = TextSplitterConfig()
         self.vector_processing = VectorProcessingConfig()
         self.qdrant = QdrantConfig()
+        self.redis = RedisConfig()
         self.processing = ProcessingConfig()
         self.monitoring = MonitoringConfig()
         self.airflow = AirflowConfig()
@@ -193,14 +258,18 @@ class PipelineConfig:
                 'text_splitter': asdict(self.text_splitter),
                 'vector_processing': asdict(self.vector_processing),
                 'qdrant': asdict(self.qdrant),
+                'redis': asdict(self.redis),
                 'processing': asdict(self.processing),
-                'monitoring': asdict(self.monitoring)
+                'monitoring': asdict(self.monitoring),
+                'airflow': asdict(self.airflow)
             }
             
             # Don't save sensitive information
             config_data['data_ingestion']['api_key'] = "***REDACTED***"
             if config_data['qdrant']['api_key']:
                 config_data['qdrant']['api_key'] = "***REDACTED***"
+            if config_data['redis']['password']:
+                config_data['redis']['password'] = "***REDACTED***"
             
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(config_data, f, indent=2)
@@ -297,6 +366,15 @@ class PipelineConfig:
                 'cluster_name': self.qdrant.cluster_name,
                 'free_tier_limit_mb': self.qdrant.free_tier_limit_mb
             },
+            'redis': {
+                'host': self.redis.host,
+                'port': self.redis.port,
+                'db': self.redis.db,
+                'password_configured': bool(self.redis.password),
+                'ssl': self.redis.ssl,
+                'atomic_operations': self.redis.enable_atomic_operations,
+                'rate_limit_ttl_hours': self.redis.rate_limit_key_ttl_hours
+            },
             'processing': {
                 'working_directory': self.processing.working_directory,
                 'log_level': self.processing.log_level,
@@ -348,5 +426,3 @@ def load_config(config_file: Optional[str] = None) -> PipelineConfig:
         logger.info("📋 Using default configuration (no config file found)")
     
     return config
-
-
