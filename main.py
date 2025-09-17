@@ -9,22 +9,22 @@ This module orchestrates the complete pipeline:
 
 Provides a single entry point for the entire processing workflow.
 """
-from typing import Dict, Any, List
-from pathlib import Path
-from datetime import datetime
-import logging
 import argparse
 import json
-import requests
+import logging
 import os
+import re
 import time
 import urllib.parse
-from typing import Optional
-from dotenv import load_dotenv
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Import processing modules
-from config import PipelineConfig, load_config
+import requests
+from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+from config import PipelineConfig, load_config
 
 
 # Handle vector processor import gracefully
@@ -32,7 +32,7 @@ try:
     from vector_processor import EnhancedVectorProcessor
     VECTOR_PROCESSOR_AVAILABLE = True
 except ImportError as e:
-    print(f"Warning: Vector processing not available ({e}). Only chunking will work.")
+    logger.warning(f"Vector processing not available ({e}). Only chunking will work.")
     EnhancedVectorProcessor = None
     VECTOR_PROCESSOR_AVAILABLE = False
 
@@ -126,12 +126,11 @@ class LegalDocumentPipeline:
 
     def get_pipeline_status(self) -> Dict[str, Any]:
         """Get current pipeline status and available data."""
-        status = {
+        return {
             'working_dir': str(self.working_dir),
             'files': [str(f) for f in self.working_dir.glob("*")],
             'configuration': self.config.get_summary()
         }
-        return status
 
 
     def run_pipeline(self) -> Dict[str, Any]:
@@ -178,11 +177,8 @@ class LegalDocumentPipeline:
             existing_dockets = vector_processor.get_existing_docket_ids()
             logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
 
-        # This will improve pagination
-        if len(existing_dockets) == 0:
-            qdrant_id = 1
-        else:
-            qdrant_id = len(existing_dockets) + 1
+        # Set starting ID for new documents
+        qdrant_id = len(existing_dockets) + 1
 
         # Stats tracking
         stats = {
@@ -239,7 +235,7 @@ class LegalDocumentPipeline:
                     
                     # Chunk documents
                     all_chunks = []
-                    for _, op in enumerate(docket_opinions):
+                    for op in docket_opinions:
                         opinion_text = op.get('opinion_text', '')
                         if not opinion_text or len(opinion_text.strip()) < 50:
                             continue
@@ -301,14 +297,13 @@ class LegalDocumentPipeline:
                                 stats['errors'].append({'docket': docket_id, 'error': str(e)})
                     
                     stats['dockets_processed'] += 1
-                    logger.info(f"✅ Docket {docket_id}: {len(docket.get('clusters', []))} clusters, {len(docket_opinions)} opinions, {len(all_chunks)} chunks")
-                
+                    logger.info(f"✅ Docket {docket_id}: {len(docket_opinions)} opinions, {len(all_chunks)} chunks")
 
                 except Exception as e:
                     logger.error(f"❌ Error processing docket {docket_id}: {e}")
                     stats['errors'].append({'docket': docket_id, 'error': str(e)})
 
-                qdrant_id += 1  # Increment for next docket
+                qdrant_id += 1
             
             # Final summary
             duration = (datetime.now() - start_time).total_seconds()
@@ -354,10 +349,10 @@ class LegalDocumentPipeline:
         This ensures consistent ordering and prevents pagination issues with new dockets.
         Note: qdrant_id parameter is kept for compatibility but not used in pagination logic.
         """
-        
+
         load_dotenv()
-        CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
-        HEADERS = {'Authorization': f'Token {CASELAW_API_KEY}'} if CASELAW_API_KEY else {}
+        api_key = os.getenv('CASELAW_API_KEY')
+        headers = {'Authorization': f'Token {api_key}'} if api_key else {}
         
         new_dockets = []
         page_count = 0
@@ -365,9 +360,8 @@ class LegalDocumentPipeline:
         consecutive_empty_pages = 0
         max_consecutive_empty = 50
         
-        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (starting from beginning)...")
+        logger.info(f"🌐 Fetching {num_dockets} new dockets from {court}")
         logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
-        logger.info(f"📊 Starting from the beginning with id ordering to ensure consistency")
 
         base_url = "https://www.courtlistener.com/api/rest/v4/dockets/"
 
@@ -393,7 +387,7 @@ class LegalDocumentPipeline:
                 
                 response_data = fetch_with_retry(
                     url=full_url,
-                    headers=HEADERS,
+                    headers=headers,
                     timeout=30,
                     max_retries=3,
                     delay=5
@@ -503,9 +497,6 @@ class LegalDocumentPipeline:
         if self._starts_at_sentence_boundary(chunk):
             return chunk
             
-        # Find the first proper sentence start
-        import re
-        
         # Look for sentence patterns: '. [A-Z]', '? [A-Z]', '! [A-Z]', or start of paragraph
         patterns = [
             r'[.!?]\s+[A-Z]',  # Sentence ending + capital letter
@@ -534,9 +525,6 @@ class LegalDocumentPipeline:
         # If already ends at sentence boundary, keep it
         if chunk.endswith(('.', '!', '?')):
             return chunk
-        
-        # Find the last complete sentence
-        import re
         
         # Look for the last sentence-ending punctuation
         sentence_endings = list(re.finditer(r'[.!?]', chunk))
@@ -583,8 +571,8 @@ class LegalDocumentPipeline:
         """Fetch and process all clusters and opinions for a specific docket object."""
 
         load_dotenv()
-        CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
-        HEADERS = {'Authorization': f'Token {CASELAW_API_KEY}'} if CASELAW_API_KEY else {}
+        api_key = os.getenv('CASELAW_API_KEY')
+        headers = {'Authorization': f'Token {api_key}'} if api_key else {}
         
         opinions = []
         clusters = []
@@ -597,8 +585,8 @@ class LegalDocumentPipeline:
             try:
                 logger.debug(f"Processing cluster: {cluster_url}")
                 cluster = fetch_with_retry(
-                    url=cluster_url, 
-                    headers=HEADERS, 
+                    url=cluster_url,
+                    headers=headers,
                     timeout=30,
                     max_retries=3,
                     delay=5
@@ -613,8 +601,8 @@ class LegalDocumentPipeline:
                     try:
                         logger.debug(f"Processing opinion: {opinion_url}")
                         opinion = fetch_with_retry(
-                            url=opinion_url, 
-                            headers=HEADERS, 
+                            url=opinion_url,
+                            headers=headers,
                             timeout=30,
                             max_retries=3,
                             delay=5

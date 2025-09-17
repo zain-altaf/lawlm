@@ -5,13 +5,13 @@ Centralized configuration system with environment variable support,
 validation, and monitoring capabilities.
 """
 
-import os
 import json
-import argparse
 import logging
-from typing import Dict, Any, Optional, List
+import os
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -43,11 +43,11 @@ class DataIngestionConfig:
 @dataclass
 class TextSplitterConfig:
     """Configuration for RecursiveCharacterTextSplitter."""
-    chunk_size_chars: int = 1536        # Character count for chunks (was 384 tokens * 4)
-    overlap_chars: int = 300            # Character overlap between chunks (was 75 tokens * 4)
-    min_chunk_size_chars: int = 400     # Minimum chunk size in characters (was 100 tokens * 4)
-    quality_threshold: float = 0.3      # Quality threshold for chunks
-    separators: Optional[List[str]] = None  # Will use legal-optimized defaults if None
+    chunk_size_chars: int = 1536
+    overlap_chars: int = 300
+    min_chunk_size_chars: int = 400
+    quality_threshold: float = 0.3
+    separators: Optional[List[str]] = None
 
 
 
@@ -57,12 +57,8 @@ class VectorProcessingConfig:
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     batch_size: int = 50
     memory_cleanup_frequency: int = 100
-    device: str = "auto"
+    device: str = "cpu"
     collection_name_vector: str = "caselaw-chunks"
-    
-    def __post_init__(self):
-        if self.device == "auto":
-            self.device = "cpu"  # Force CPU-only processing
 
 
 @dataclass
@@ -72,27 +68,26 @@ class QdrantConfig:
     api_key: Optional[str] = None
     timeout: int = 30
     prefer_grpc: bool = False
-    use_cloud: bool = False  # Flag to indicate cloud usage
-    cluster_name: Optional[str] = None  # Cloud cluster name for reference
-    free_tier_limit_mb: float = 1024.0  # 1GB free tier limit
-    
+    use_cloud: bool = False
+    cluster_name: Optional[str] = None
+    free_tier_limit_mb: float = 1024.0
+
     def __post_init__(self):
         # Check environment variables
         env_url = os.getenv("QDRANT_URL")
         if env_url:
             self.url = env_url
-            # Detect if this is a cloud URL
             if "cloud.qdrant.io" in env_url or "qdrant.tech" in env_url:
                 self.use_cloud = True
-        
+
         env_api_key = os.getenv("QDRANT_API_KEY")
         if env_api_key:
             self.api_key = env_api_key
-            
+
         env_cluster_name = os.getenv("QDRANT_CLUSTER_NAME")
         if env_cluster_name:
             self.cluster_name = env_cluster_name
-            
+
         # If API key is provided, assume cloud usage
         if self.api_key and not self.use_cloud:
             if "localhost" not in self.url and "127.0.0.1" not in self.url:
@@ -102,14 +97,14 @@ class QdrantConfig:
 @dataclass
 class AirflowConfig:
     """Configuration for Airflow DAG orchestration."""
-    batch_size: int = 3           # Optimized for maximum throughput (4950 calls / 10 calls per docket)
-    total_batches: int = 1          # Single large batch per run for efficiency
-    schedule_interval_minutes: int = 12  # Run every 12 minutes for maximum throughput
-    max_active_runs: int = 1        # Ensure only one instance runs at a time
-    pool_size: int = 50             # API pool size for rate limiting
-    target_calls_per_hour: int = 4950  # Maximum API calls per hour (99% of limit)
-    soft_rate_buffer: int = 12      # Buffer for soft rate limiting
-    initial_offset: int = 0         # Starting offset for docket fetching
+    batch_size: int = 495
+    total_batches: int = 1
+    schedule_interval_minutes: int = 12
+    max_active_runs: int = 1
+    pool_size: int = 50
+    target_calls_per_hour: int = 4950
+    soft_rate_buffer: int = 12
+    initial_offset: int = 0
 
 @dataclass
 class ProcessingConfig:
@@ -119,13 +114,10 @@ class ProcessingConfig:
     progress_reporting: bool = True
     save_intermediate_files: bool = True
     cleanup_temp_files: bool = False
-    max_workers: int = 1  # For future parallel processing
-    
+    max_workers: int = 1
+
     def __post_init__(self):
-        # Ensure working directory exists
         Path(self.working_directory).mkdir(parents=True, exist_ok=True)
-        
-        # Set up logging level
         numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
         logging.getLogger().setLevel(numeric_level)
 
@@ -134,10 +126,10 @@ class ProcessingConfig:
 class MonitoringConfig:
     """Configuration for monitoring and metrics."""
     enable_memory_monitoring: bool = True
-    memory_check_frequency: int = 50  # Every N operations
+    memory_check_frequency: int = 50
     log_performance_metrics: bool = True
     save_processing_summary: bool = True
-    alert_memory_threshold_mb: float = 8192  # 8GB
+    alert_memory_threshold_mb: float = 8192
 
 
 class PipelineConfig:
@@ -162,10 +154,10 @@ class PipelineConfig:
         self.monitoring = MonitoringConfig()
         self.airflow = AirflowConfig()
 
-        # Load from file if provided (this is a JSON that you need to provide)
+        # Load from file if provided
         if config_file and Path(config_file).exists():
             self.load_from_file(config_file)
-        
+
         # Validate configuration
         self.validate()
     
@@ -206,8 +198,7 @@ class PipelineConfig:
             }
             
             # Don't save sensitive information
-            if 'api_key' in config_data['data_ingestion']:
-                config_data['data_ingestion']['api_key'] = "***REDACTED***"
+            config_data['data_ingestion']['api_key'] = "***REDACTED***"
             if config_data['qdrant']['api_key']:
                 config_data['qdrant']['api_key'] = "***REDACTED***"
             
@@ -223,64 +214,57 @@ class PipelineConfig:
     def validate(self) -> List[str]:
         """
         Validate configuration and return list of warnings/errors.
-        
-        Returns:
-            List of validation messages
         """
         issues = []
-        
+
         # Check required API key
         if not self.data_ingestion.api_key:
-            issues.append("❌ CASELAW_API_KEY is required for data ingestion")
-        
+            issues.append("CASELAW_API_KEY is required for data ingestion")
+
         # Validate chunk sizes
         if self.text_splitter.min_chunk_size_chars >= self.text_splitter.chunk_size_chars:
-            issues.append("❌ min_chunk_size_chars must be less than chunk_size_chars")
-        
+            issues.append("min_chunk_size_chars must be less than chunk_size_chars")
+
         # Validate quality threshold
         if not 0 < self.text_splitter.quality_threshold < 1:
-            issues.append("❌ quality_threshold must be between 0 and 1")
-        
+            issues.append("quality_threshold must be between 0 and 1")
+
         # Check working directory
         if not Path(self.processing.working_directory).exists():
-            issues.append(f"⚠️ Working directory does not exist: {self.processing.working_directory}")
-        
+            issues.append(f"Working directory does not exist: {self.processing.working_directory}")
+
         # Test Qdrant connection (non-blocking)
         try:
             from qdrant_client import QdrantClient
-            
-            # Create client with or without API key
-            if self.qdrant.api_key:
-                client = QdrantClient(
-                    url=self.qdrant.url, 
-                    api_key=self.qdrant.api_key,
-                    timeout=5
-                )
-            else:
-                client = QdrantClient(self.qdrant.url, timeout=5)
-                
+
+            client = QdrantClient(
+                url=self.qdrant.url,
+                api_key=self.qdrant.api_key,
+                timeout=5
+            ) if self.qdrant.api_key else QdrantClient(self.qdrant.url, timeout=5)
+
             client.get_collections()
             connection_type = "cloud" if self.qdrant.use_cloud else "local"
-            logger.info(f"✅ Qdrant {connection_type} connection successful: {self.qdrant.url}")
-            
+            logger.info(f"Qdrant {connection_type} connection successful: {self.qdrant.url}")
+
         except Exception as e:
-            issues.append(f"⚠️ Cannot connect to Qdrant at {self.qdrant.url}: {e}")
-            
+            issues.append(f"Cannot connect to Qdrant at {self.qdrant.url}: {e}")
+
         # Check cloud-specific requirements
         if self.qdrant.use_cloud:
             if not self.qdrant.api_key:
-                issues.append("❌ QDRANT_API_KEY is required for cloud usage")
+                issues.append("QDRANT_API_KEY is required for cloud usage")
             if "localhost" in self.qdrant.url or "127.0.0.1" in self.qdrant.url:
-                issues.append("⚠️ Cloud flag enabled but URL appears to be local")
-        
+                issues.append("Cloud flag enabled but URL appears to be local")
+
         # Log validation results
         if issues:
             logger.warning(f"Configuration validation found {len(issues)} issues:")
             for issue in issues:
                 logger.warning(f"  {issue}")
         else:
-            logger.info("✅ Configuration validation passed")
-        
+            logger.info("Configuration validation passed")
+
         return issues
     
     def get_summary(self) -> Dict[str, Any]:
@@ -324,14 +308,6 @@ class PipelineConfig:
             }
         }
 
-def create_default_config_file(config_path: str = "config.json") -> None:
-    """Create a default configuration file."""
-    config = PipelineConfig()
-    config.save_to_file(config_path)
-    print(f"📋 Created default configuration file: {config_path}")
-    print("🔧 Edit this file to customize your pipeline settings")
-
-
 def load_config(config_file: Optional[str] = None) -> PipelineConfig:
     """
     Load pipeline configuration with fallbacks.
@@ -374,19 +350,3 @@ def load_config(config_file: Optional[str] = None) -> PipelineConfig:
     return config
 
 
-# Global configuration instance
-_global_config: Optional[PipelineConfig] = None
-
-
-def get_config() -> PipelineConfig:
-    """Get global configuration instance."""
-    global _global_config
-    if _global_config is None:
-        _global_config = load_config()
-    return _global_config
-
-
-def set_config(config: PipelineConfig) -> None:
-    """Set global configuration instance."""
-    global _global_config
-    _global_config = config

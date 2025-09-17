@@ -6,24 +6,18 @@ BAAI/bge-small-en-v1.5 for better legal domain performance. Optimized
 for semantically chunked legal documents.
 """
 
-from http import client
-import uuid
-import os
 import json
 import logging
-import gc
-import subprocess
-import time
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient, models
-from dotenv import load_dotenv
-from sklearn.feature_extraction.text import TfidfVectorizer
-from scipy.sparse import csr_matrix
-import numpy as np
+import os
 import re
+import uuid
+from typing import Any, Dict, List, Optional
+
+import numpy as np
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from qdrant_client import QdrantClient, models
+from sentence_transformers import SentenceTransformer
 
 # Handle torch import gracefully
 try:
@@ -427,8 +421,8 @@ class EnhancedVectorProcessor:
         if not self.client.collection_exists(collection):
             raise ValueError(f"Collection '{collection}' does not exist.")
         
-        logger.info(f"🔍 Performing semantic search on '{collection}'")
-        logger.info(f"📊 Query: {query}")
+        logger.info(f"Performing semantic search on '{collection}'")
+        logger.info(f"Query: {query}")
         
         # Create enhanced query with BGE prefix if applicable
         enhanced_query = self.query_prefix + query if self.query_prefix else query
@@ -458,11 +452,11 @@ class EnhancedVectorProcessor:
                 }
                 results.append(result)
             
-            logger.info(f"✅ Semantic search completed: {len(results)} results")
+            logger.info(f"Semantic search completed: {len(results)} results")
             return results
             
         except Exception as e:
-            logger.error(f"❌ Semantic search failed: {e}")
+            logger.error(f"Semantic search failed: {e}")
             raise
     
     def hybrid_search(self, query: str, collection_name: str = None, 
@@ -484,8 +478,8 @@ class EnhancedVectorProcessor:
         if not self.client.collection_exists(collection):
             raise ValueError(f"Collection '{collection}' does not exist.")
         
-        logger.info(f"🔍 Performing hybrid search on '{collection}'")
-        logger.info(f"📊 Query: {query}")
+        logger.info(f"Performing hybrid search on '{collection}'")
+        logger.info(f"Query: {query}")
         
         # Create enhanced query with BGE prefix if applicable
         enhanced_query = self.query_prefix + query if self.query_prefix else query
@@ -533,11 +527,11 @@ class EnhancedVectorProcessor:
                 }
                 results.append(result)
             
-            logger.info(f"✅ Hybrid search completed: {len(results)} results")
+            logger.info(f"Hybrid search completed: {len(results)} results")
             return results
             
         except Exception as e:
-            logger.error(f"❌ Hybrid search failed: {e}")
+            logger.error(f"Hybrid search failed: {e}")
             raise
     
     def process_documents_from_file(self, chunks_file: str, 

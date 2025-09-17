@@ -93,7 +93,7 @@ class LegalRAGSystem:
         Returns:
             List of relevant document chunks with metadata
         """
-        logger.info(f"🔍 Searching for: '{query}' (hybrid search)")
+        logger.info(f" Searching for: '{query}' (hybrid search)")
         
         try:
             results = self.vector_processor.hybrid_search(
@@ -107,7 +107,7 @@ class LegalRAGSystem:
             return results
             
         except Exception as e:
-            logger.error(f"❌ Search failed: {e}")
+            logger.error(f" Search failed: {e}")
             return []
     
     def format_search_results(self, results: List[Dict[str, Any]]) -> str:
@@ -175,11 +175,11 @@ Please provide a concise 150-word summary that answers the query based on these 
             )
             
             summary = response.choices[0].message.content.strip()
-            logger.info(f"✅ Generated {len(summary.split())} word summary")
+            logger.info(f"Generated {len(summary.split())} word summary")
             return summary
-            
+
         except Exception as e:
-            logger.error(f"❌ OpenAI API error: {e}")
+            logger.error(f"OpenAI API error: {e}")
             return f"Error generating summary. Found relevant information about: {query}"
     
     def query(self, 
@@ -267,11 +267,11 @@ def main():
     
     # Check required environment variables
     if not os.getenv("QDRANT_URL"):
-        print("❌ Error: QDRANT_URL environment variable not set")
+        print(" Error: QDRANT_URL environment variable not set")
         return 1
     
     if not os.getenv("OPENAI_API_KEY"):
-        print("⚠️ Warning: OPENAI_API_KEY not set. Summaries will be unavailable.")
+        print(" Warning: OPENAI_API_KEY not set. Summaries will be unavailable.")
     
     try:
         # Initialize RAG system
@@ -283,7 +283,7 @@ def main():
         
         if args.query:
             # Single query mode
-            print(f"\n🔍 Legal Query: {args.query}")
+            print(f"\n Legal Query: {args.query}")
             print("=" * 60)
             
             result = rag_system.query(
@@ -291,7 +291,7 @@ def main():
                 score_threshold=args.score_threshold
             )
             
-            print(f"\n📝 Summary ({len(result['summary'].split())} words):")
+            print(f"\n Summary ({len(result['summary'].split())} words):")
             print(result['summary'])
             
             if result['sources']:
@@ -299,34 +299,34 @@ def main():
                 for i, source in enumerate(result['sources'], 1):
                     print(f"  {i}. {source['case_name']} ({source['court'].upper()}, {source['date_filed']}) - Score: {source['relevance_score']:.3f}")
             
-            print(f"\n⏱️ Processing time: {result['processing_time']:.2f}s")
+            print(f"\n Processing time: {result['processing_time']:.2f}s")
             
         elif args.interactive:
             # Interactive mode
-            print("\n🏛️ Legal RAG Query System - Interactive Mode")
+            print("\n Legal RAG Query System - Interactive Mode")
             print("Ask legal questions and get AI-powered summaries based on case law.")
             print("Type 'quit' or 'exit' to stop.")
             print("=" * 60)
             
             while True:
                 try:
-                    query = input("\n📋 Enter your legal question: ").strip()
+                    query = input("\n Enter your legal question: ").strip()
                     
                     if query.lower() in ['quit', 'exit', 'q']:
-                        print("👋 Goodbye!")
+                        print(" Goodbye!")
                         break
                     
                     if not query:
                         continue
                     
-                    print(f"\n🔍 Searching and analyzing...")
+                    print(f"\n Searching and analyzing...")
                     
                     result = rag_system.query(
                         question=query,
                         score_threshold=args.score_threshold
                     )
                     
-                    print(f"\n📝 Answer ({len(result['summary'].split())} words):")
+                    print(f"\n Answer ({len(result['summary'].split())} words):")
                     print("-" * 40)
                     print(result['summary'])
                     
@@ -335,19 +335,19 @@ def main():
                         for i, source in enumerate(result['sources'][:3], 1):  # Show top 3
                             print(f"  • {source['case_name']} ({source['court'].upper()}, {source['date_filed']})")
                     
-                    print(f"\n⏱️ {result['processing_time']:.1f}s | {result['search_type']} search | {result['documents_found']} docs found")
+                    print(f"\n {result['processing_time']:.1f}s | {result['search_type']} search | {result['documents_found']} docs found")
                     
                 except KeyboardInterrupt:
-                    print("\n👋 Goodbye!")
+                    print("\n Goodbye!")
                     break
                 except Exception as e:
-                    print(f"❌ Error: {e}")
+                    print(f" Error: {e}")
         else:
             print("Please use --query for single question or --interactive for session mode")
             return 1
             
     except Exception as e:
-        logger.error(f"❌ System initialization failed: {e}")
+        logger.error(f" System initialization failed: {e}")
         return 1
     
     return 0

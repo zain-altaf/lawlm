@@ -10,7 +10,7 @@ ENV/
 # IDE
 .vscode/
 .idea/
-.claude/
+.claude/*
 *.swp
 *.swo
 *~
@@ -37,4 +37,14 @@ logs/
 # Testing
 .pytest_cache/*
 
+# Airflow runtime files
+*.db
+*.pid
+airflow-*.log
+airflow-*.out
+airflow-*.err
+airflow/logs/*
+
 CLAUDE.md
+
+context/*

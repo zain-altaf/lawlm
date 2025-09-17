@@ -1,5 +1,0 @@
-[2025-09-16 19:49:26 -0400] [619818] [INFO] Starting gunicorn 21.2.0
-[2025-09-16 19:49:26 -0400] [619818] [INFO] Listening at: http://[::]:8793 (619818)
-[2025-09-16 19:49:26 -0400] [619818] [INFO] Using worker: sync
-[2025-09-16 19:49:26 -0400] [619819] [INFO] Booting worker with pid: 619819
-[2025-09-16 19:49:26 -0400] [619822] [INFO] Booting worker with pid: 619822

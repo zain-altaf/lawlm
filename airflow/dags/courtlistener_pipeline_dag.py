@@ -7,25 +7,16 @@ This DAG orchestrates the complete legal document processing pipeline:
 3. Document chunking and processing
 4. Vector embedding generation
 5. Storage in Qdrant vector database
-
-Follows the design principles from context/airflow-design-principles.md
 """
 
-import logging
 import json
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
-from pathlib import Path
+import logging
 import sys
-import os
+from datetime import datetime, timedelta
+from typing import Any, Dict, List
 
-from airflow.decorators import dag, task, task_group
-from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.exceptions import AirflowFailException, AirflowSkipException
+from airflow.decorators import dag, task
 from airflow.models import Variable
-from airflow.utils.trigger_rule import TriggerRule
-import requests
-import backoff
 
 # Add the project root to Python path for imports
 sys.path.append('/root/lawlm')
@@ -33,10 +24,10 @@ sys.path.append('/root/lawlm')
 # Configuration constants
 API_BASE_URL = "https://www.courtlistener.com/api/rest/v4"
 CALL_LIMIT_PER_HOUR = 5000
-TARGET_CALLS_PER_HOUR = 4950  # Maximum throughput with safety margin
+TARGET_CALLS_PER_HOUR = 4950
 METASTORE_CONN_ID = "postgres_default"
 API_POOL_NAME = "courtlistener_api_pool"
-SAFE_CONCURRENCY_LIMIT = 50  # Increased for higher throughput while maintaining control
+SAFE_CONCURRENCY_LIMIT = 50
 
 # Configure logging
 task_logger = logging.getLogger("airflow.task")
@@ -68,10 +59,9 @@ def courtlistener_pipeline_dag():
     from main import LegalDocumentPipeline
 
     @task
-    def check_rate_limit(target_calls: int = TARGET_CALLS_PER_HOUR) -> bool:
+    def check_rate_limit() -> bool:
         """
         Check to ensure the CourtListener API hourly rate limit is not exceeded.
-        Returns True if we can proceed, False if we should skip this run.
         """
         # Get the variable for remaining API calls and update it
         try:
@@ -112,16 +102,13 @@ def courtlistener_pipeline_dag():
 
     @task
     def fetch_new_dockets_for_processing(court: str, batch_size: int) -> List[int]:
-        """
-        Fetches a batch of new dockets that haven't been processed yet.
-        """
+        """Fetches a batch of new dockets that haven't been processed yet."""
         task_logger.info(f"Fetching {batch_size} new dockets from {court}")
 
-        # Use the main pipeline's pagination logic with deduplication
         config = load_config()
         pipeline = LegalDocumentPipeline(config)
 
-        # Get existing dockets for deduplication - create vector processor directly
+        # Get existing dockets for deduplication
         existing_dockets = set()
         try:
             vector_processor = EnhancedVectorProcessor(
@@ -134,7 +121,6 @@ def courtlistener_pipeline_dag():
             task_logger.warning(f"Could not get existing dockets: {e}")
             existing_dockets = set()
 
-        # Fetch new dockets using the working pagination logic
         new_dockets = pipeline._fetch_all_dockets_paginated(
             court=court,
             num_dockets=batch_size,
@@ -149,8 +135,7 @@ def courtlistener_pipeline_dag():
     @task
     def process_single_docket_with_main_pipeline(docket_id: int) -> Dict[str, Any]:
         """
-        Process a single docket using the existing working main.py pipeline logic.
-        Uses the improved mock_fetch_specific_docket approach with deduplication.
+        Process a single docket using the existing main.py pipeline logic.
         """
         import requests
         from main import LegalDocumentPipeline
@@ -169,36 +154,27 @@ def courtlistener_pipeline_dag():
             # Store original fetch method
             original_fetch = pipeline._fetch_all_dockets_paginated
 
-            def mock_fetch_specific_docket(court: str, num_dockets: int, existing_dockets: set, qdrant_id: int = 1):
+            def mock_fetch_specific_docket(court: str, num_dockets: int, existing_dockets: set):
                 """Mock fetch to return only the specific docket we want if it doesn't already exist."""
-                # CRITICAL: Force refresh of existing dockets from vector processor to ensure up-to-date state
                 from vector_processor import EnhancedVectorProcessor
                 vp = EnhancedVectorProcessor(
                     model_name=config.vector_processing.embedding_model,
                     collection_name=config.vector_processing.collection_name_vector
                 )
-                # Get fresh existing dockets directly from Qdrant
                 current_existing_dockets = vp.get_existing_docket_ids()
-                task_logger.info(f"Fresh check: Found {len(current_existing_dockets)} existing dockets in collection")
+                task_logger.info(f"Fresh check: Found {len(current_existing_dockets)} existing dockets")
 
-                # Check if this docket already exists in the collection using fresh data
-                if docket_id in current_existing_dockets:
-                    task_logger.info(f"Docket {docket_id} already exists in collection (fresh check), skipping to prevent duplicates")
-                    return []  # Return empty list to skip processing
+                if docket_id in current_existing_dockets or docket_id in existing_dockets:
+                    task_logger.info(f"Docket {docket_id} already exists, skipping")
+                    return []
 
-                # Also check the passed existing_dockets parameter as backup
-                if docket_id in existing_dockets:
-                    task_logger.info(f"Docket {docket_id} already exists in collection (parameter check), skipping to prevent duplicates")
-                    return []  # Return empty list to skip processing
-
-                # Get the specific docket via API only if it's new
-                task_logger.info(f"Docket {docket_id} is new, fetching from API...")
+                task_logger.info(f"Docket {docket_id} is new, fetching from API")
                 headers = {"Authorization": f"Token {config.data_ingestion.api_key}"}
                 url = f"{config.data_ingestion.api_base_url}/dockets/{docket_id}/"
                 response = requests.get(url, headers=headers, timeout=30)
                 response.raise_for_status()
                 docket = response.json()
-                task_logger.info(f"Docket {docket_id} successfully fetched and will be processed")
+                task_logger.info(f"Docket {docket_id} successfully fetched")
                 return [docket]
 
             # Temporarily replace the fetch method
@@ -212,7 +188,6 @@ def courtlistener_pipeline_dag():
 
             task_logger.info(f"Pipeline result for docket {docket_id}: {result}")
 
-            # Handle the case where docket already exists (up_to_date status)
             if result.get('status') == 'up_to_date':
                 return {
                     "docket_id": docket_id,
