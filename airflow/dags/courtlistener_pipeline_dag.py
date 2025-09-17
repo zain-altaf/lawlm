@@ -53,7 +53,7 @@ default_args = {
 @dag(
     dag_id='courtlistener_pipeline',
     default_args=default_args,
-    schedule_interval='@daily',
+    schedule='@daily',
     catchup=False,
     tags=['legal', 'etl', 'vector_search'],
 )

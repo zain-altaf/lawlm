@@ -102,7 +102,7 @@ class QdrantConfig:
 @dataclass
 class AirflowConfig:
     """Configuration for Airflow DAG orchestration."""
-    batch_size: int = 10           # Optimized for maximum throughput (4950 calls / 10 calls per docket)
+    batch_size: int = 3           # Optimized for maximum throughput (4950 calls / 10 calls per docket)
     total_batches: int = 1          # Single large batch per run for efficiency
     schedule_interval_minutes: int = 12  # Run every 12 minutes for maximum throughput
     max_active_runs: int = 1        # Ensure only one instance runs at a time
