@@ -13,15 +13,17 @@ Key Features:
 - Comprehensive error handling and fallback mechanisms
 """
 
+# Standard library imports
 import json
 import logging
 import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
+# Third-party imports
 import redis
-from airflow.hooks.base import BaseHook
 from airflow.exceptions import AirflowException
+from airflow.hooks.base import BaseHook
 from airflow.models import Connection
 
 logger = logging.getLogger(__name__)
@@ -110,7 +112,7 @@ class RedisRateLimitHook(BaseHook):
         return redis.call('GET', counter_key)
     """
 
-    def __init__(self, redis_conn_id: str = "redis_default", **kwargs):
+    def __init__(self, redis_conn_id: str = "redis_default", **kwargs) -> None:
         """
         Initialize Redis hook with connection and script preparation.
 
@@ -204,7 +206,8 @@ class RedisRateLimitHook(BaseHook):
 
     def get_current_hour_key(self) -> str:
         """Get the current hour key for rate limiting."""
-        current_hour = datetime.now().strftime("%Y-%m-%d_%H")
+        # Use UTC time to match Airflow's execution context
+        current_hour = datetime.utcnow().strftime("%Y-%m-%d_%H")
         return self.RATE_LIMIT_KEY_PATTERN.format(hour=current_hour)
 
     def get_pipeline_state_key(self, dag_run_id: str) -> str:
@@ -228,7 +231,7 @@ class RedisRateLimitHook(BaseHook):
         """
         try:
             client = self.get_conn()
-            current_time = datetime.now()
+            current_time = datetime.utcnow()
             current_hour = current_time.strftime("%Y-%m-%d_%H")
             ttl_seconds = ttl_hours * 3600
 
@@ -296,7 +299,7 @@ class RedisRateLimitHook(BaseHook):
         """
         try:
             client = self.get_conn()
-            start_time = datetime.now()
+            start_time = datetime.utcnow()
             start_time_str = start_time.isoformat()
 
             task_start_key = self.get_task_start_key(dag_run_id, task_id)
@@ -311,7 +314,7 @@ class RedisRateLimitHook(BaseHook):
         except Exception as e:
             logger.error(f"Failed to cache task start time: {e}")
             # Return current time as fallback
-            return datetime.now().isoformat()
+            return datetime.utcnow().isoformat()
 
     def atomic_increment_api_calls(self, calls_to_add: int, limit: int = 5000,
                                    ttl_hours: int = 2) -> Dict[str, Any]:
@@ -381,7 +384,7 @@ class RedisRateLimitHook(BaseHook):
         """
         try:
             client = self.get_conn()
-            current_hour = datetime.now().strftime("%Y-%m-%d_%H")
+            current_hour = datetime.utcnow().strftime("%Y-%m-%d_%H")
             ttl_seconds = ttl_hours * 3600
 
             state_key = self.get_pipeline_state_key(dag_run_id)
@@ -410,7 +413,7 @@ class RedisRateLimitHook(BaseHook):
                 'api_calls_made': api_calls_made,
                 'success': success,
                 'total_calls_this_hour': int(new_count),
-                'updated_at': datetime.now().isoformat()
+                'updated_at': datetime.utcnow().isoformat()
             }
 
         except Exception as e:
@@ -421,23 +424,27 @@ class RedisRateLimitHook(BaseHook):
                 'api_calls_made': api_calls_made,
                 'success': success,
                 'error': str(e),
-                'updated_at': datetime.now().isoformat()
+                'updated_at': datetime.utcnow().isoformat()
             }
 
     def get_current_rate_limit_status(self) -> Dict[str, Any]:
         """
-        Get current API rate limit status from Redis.
+        Get current API rate limit status from Redis with enhanced error handling.
 
         Returns:
             Dictionary with current rate limit information
         """
         try:
             client = self.get_conn()
-            current_hour = datetime.now().strftime("%Y-%m-%d_%H")
+            current_hour = datetime.utcnow().strftime("%Y-%m-%d_%H")
             counter_key = self.COUNTER_KEY_PATTERN.format(hour=current_hour)
+
+            logger.info(f"🔍 Getting rate limit status for hour: {current_hour}, key: {counter_key}")
 
             current_count = int(client.get(counter_key) or 0)
             limit = 5000  # CourtListener API limit
+
+            logger.info(f"📊 Redis counter value: {current_count}, limit: {limit}")
 
             return {
                 'current_hour': current_hour,
@@ -445,21 +452,20 @@ class RedisRateLimitHook(BaseHook):
                 'api_calls_remaining': max(0, limit - current_count),
                 'limit': limit,
                 'utilization_percent': (current_count / limit) * 100,
-                'can_proceed': current_count < (limit - 50)  # Safety buffer
+                'can_proceed': current_count < (limit - 50),  # Safety buffer
+                'counter_key': counter_key,
+                'redis_success': True
             }
 
         except Exception as e:
-            logger.error(f"Failed to get rate limit status: {e}")
-            # Return conservative fallback
-            return {
-                'current_hour': datetime.now().strftime("%Y-%m-%d_%H"),
-                'api_calls_used': 4950,  # Conservative assumption
-                'api_calls_remaining': 50,
-                'limit': 5000,
-                'utilization_percent': 99.0,
-                'can_proceed': False,
-                'error': str(e)
-            }
+            logger.error(f"❌ Failed to get rate limit status: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.error(f"Exception details: {str(e)}")
+
+            # Instead of conservative fallback, raise the exception to let the DAG handle it
+            # This prevents the hook from silently returning wrong values
+            logger.error("🚨 Raising exception instead of using conservative fallback")
+            raise Exception(f"Redis rate limit status check failed: {e}") from e
 
     def check_hour_boundary_and_reset(self) -> Dict[str, Any]:
         """
@@ -470,8 +476,8 @@ class RedisRateLimitHook(BaseHook):
         """
         try:
             client = self.get_conn()
-            current_hour = datetime.now().strftime("%Y-%m-%d_%H")
-            previous_hour = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d_%H")
+            current_hour = datetime.utcnow().strftime("%Y-%m-%d_%H")
+            previous_hour = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%d_%H")
 
             current_key = self.COUNTER_KEY_PATTERN.format(hour=current_hour)
             previous_key = self.COUNTER_KEY_PATTERN.format(hour=previous_hour)
@@ -494,7 +500,7 @@ class RedisRateLimitHook(BaseHook):
         except Exception as e:
             logger.error(f"Failed to check hour boundary: {e}")
             return {
-                'current_hour': datetime.now().strftime("%Y-%m-%d_%H"),
+                'current_hour': datetime.utcnow().strftime("%Y-%m-%d_%H"),
                 'error': str(e),
                 'is_new_hour': False,
                 'hour_reset_detected': False
@@ -546,7 +552,7 @@ class RedisRateLimitHook(BaseHook):
         """
         try:
             client = self.get_conn()
-            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            cutoff_time = datetime.utcnow() - timedelta(hours=hours_back)
 
             # Find keys to clean up
             patterns = [

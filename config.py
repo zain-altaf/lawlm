@@ -5,6 +5,7 @@ Centralized configuration system with environment variable support,
 validation, and monitoring capabilities.
 """
 
+# Standard library imports
 import json
 import logging
 import os
@@ -12,6 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Third-party imports
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -22,7 +24,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DataIngestionConfig:
-    """Configuration for data ingestion from CourtListener API."""
+    """
+    Configuration for data ingestion from CourtListener API.
+
+    Handles API credentials, timeouts, retries, and data filtering settings.
+    """
     api_key: str = ""
     api_base_url: str = "https://www.courtlistener.com/api/rest/v4"
     timeout_seconds: int = 30
@@ -31,9 +37,9 @@ class DataIngestionConfig:
     min_text_length: int = 100
     min_word_count: int = 50
     court: str = "scotus"           
-    num_dockets: int = 5            
-    
-    def __post_init__(self):
+    num_dockets: int = 5
+
+    def __post_init__(self) -> None:
         if not self.api_key:
             self.api_key = os.getenv("CASELAW_API_KEY", "")
         if not self.api_key:
@@ -42,7 +48,11 @@ class DataIngestionConfig:
 
 @dataclass
 class TextSplitterConfig:
-    """Configuration for RecursiveCharacterTextSplitter."""
+    """
+    Configuration for RecursiveCharacterTextSplitter.
+
+    Controls how legal documents are chunked for processing.
+    """
     chunk_size_chars: int = 1536
     overlap_chars: int = 300
     min_chunk_size_chars: int = 400
@@ -51,7 +61,11 @@ class TextSplitterConfig:
 
 @dataclass
 class VectorProcessingConfig:
-    """Configuration for hybrid vector processing (dense + sparse vectors)."""
+    """
+    Configuration for hybrid vector processing (dense + sparse vectors).
+
+    Manages embedding model settings, batch processing, and collection naming.
+    """
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     batch_size: int = 50
     memory_cleanup_frequency: int = 100
@@ -61,7 +75,11 @@ class VectorProcessingConfig:
 
 @dataclass
 class QdrantConfig:
-    """Configuration for Qdrant vector database."""
+    """
+    Configuration for Qdrant vector database.
+
+    Supports both local and cloud deployments with automatic detection.
+    """
     url: str = "http://localhost:6333"
     api_key: Optional[str] = None
     timeout: int = 30
@@ -70,7 +88,7 @@ class QdrantConfig:
     cluster_name: Optional[str] = None
     free_tier_limit_mb: float = 1024.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Check environment variables
         env_url = os.getenv("QDRANT_URL")
         if env_url:
@@ -94,7 +112,11 @@ class QdrantConfig:
 
 @dataclass
 class RedisConfig:
-    """Configuration for Redis caching and rate limiting."""
+    """
+    Configuration for Redis caching and rate limiting.
+
+    Handles connection settings, rate limiting parameters, and performance tuning.
+    """
     host: str = "localhost"
     port: int = 6379
     db: int = 0
@@ -117,7 +139,7 @@ class RedisConfig:
     enable_lua_scripts: bool = True
     enable_pipeline_transactions: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         # Check environment variables for Redis configuration
         env_host = os.getenv("REDIS_HOST")
         if env_host:
@@ -155,7 +177,11 @@ class RedisConfig:
 
 @dataclass
 class AirflowConfig:
-    """Configuration for Airflow DAG orchestration."""
+    """
+    Configuration for Airflow DAG orchestration.
+
+    Controls batch processing, scheduling, and rate limiting for pipeline execution.
+    """
     batch_size: int = 495
     total_batches: int = 1
     schedule_interval_minutes: int = 12
@@ -172,7 +198,11 @@ class AirflowConfig:
 
 @dataclass
 class ProcessingConfig:
-    """Configuration for general processing settings."""
+    """
+    Configuration for general processing settings.
+
+    Manages working directories, logging, and file handling behavior.
+    """
     working_directory: str = "data"
     log_level: str = "INFO"
     progress_reporting: bool = True
@@ -180,7 +210,7 @@ class ProcessingConfig:
     cleanup_temp_files: bool = False
     max_workers: int = 1
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         Path(self.working_directory).mkdir(parents=True, exist_ok=True)
         numeric_level = getattr(logging, self.log_level.upper(), logging.INFO)
         logging.getLogger().setLevel(numeric_level)
@@ -188,7 +218,11 @@ class ProcessingConfig:
 
 @dataclass
 class MonitoringConfig:
-    """Configuration for monitoring and metrics."""
+    """
+    Configuration for monitoring and metrics.
+
+    Controls memory monitoring, performance tracking, and alerting thresholds.
+    """
     enable_memory_monitoring: bool = True
     memory_check_frequency: int = 50
     log_performance_metrics: bool = True
@@ -202,10 +236,10 @@ class PipelineConfig:
     Supports loading from files, environment variables, and runtime updates.
     """
     
-    def __init__(self, config_file: Optional[str] = None):
+    def __init__(self, config_file: Optional[str] = None) -> None:
         """
         Initialize pipeline configuration.
-        
+
         Args:
             config_file: Optional path to JSON configuration file
         """
@@ -337,7 +371,12 @@ class PipelineConfig:
         return issues
     
     def get_summary(self) -> Dict[str, Any]:
-        """Get a summary of current configuration."""
+        """
+        Get a summary of current configuration.
+
+        Returns:
+            Dictionary containing sanitized configuration summary
+        """
         return {
             'data_ingestion': {
                 'api_configured': bool(self.data_ingestion.api_key),
@@ -389,10 +428,12 @@ class PipelineConfig:
 def load_config(config_file: Optional[str] = None) -> PipelineConfig:
     """
     Load pipeline configuration with fallbacks.
-    
+
+    Searches for configuration files in standard locations if none specified.
+
     Args:
         config_file: Optional path to configuration file
-        
+
     Returns:
         PipelineConfig instance
     """

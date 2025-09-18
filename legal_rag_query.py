@@ -6,13 +6,17 @@ A retrieval-augmented generation system for legal document queries.
 Combines hybrid search (semantic + keyword) with GPT API for concise summaries.
 """
 
-import os
-import logging
+# Standard library imports
 import argparse
-from typing import List, Dict, Any
+import logging
+import os
 from datetime import datetime
+from typing import Any, Dict, List
+
+# Third-party imports
 from dotenv import load_dotenv
 
+# Local imports
 from vector_processor import EnhancedVectorProcessor
 
 # Load environment variables
@@ -35,21 +39,29 @@ except Exception as e:
 
 
 class LegalRAGSystem:
-    """Legal Retrieval-Augmented Generation System."""
+    """
+    Legal Retrieval-Augmented Generation System.
+
+    Provides RAG functionality for legal document queries using hybrid search
+    and OpenAI API for generating summaries.
+    """
     
-    def __init__(self, 
+    def __init__(self,
                  collection_name: str = "caselaw-chunks",
                  embedding_model: str = "BAAI/bge-small-en-v1.5",
                  openai_model: str = "gpt-4o-mini",
-                 max_results: int = 5):
+                 max_results: int = 5) -> None:
         """
         Initialize the Legal RAG system.
-        
+
         Args:
             collection_name: Name of the hybrid Qdrant collection
             embedding_model: Embedding model for vector search
             openai_model: OpenAI model for text generation
             max_results: Maximum number of search results to consider
+
+        Raises:
+            ValueError: If the collection does not exist
         """
         self.collection_name = collection_name
         self.openai_model = openai_model
@@ -75,16 +87,16 @@ class LegalRAGSystem:
         info = self.vector_processor.client.get_collection(collection_name)
         logger.info(f"   Available documents: {info.points_count} chunks")
     
-    def search_legal_documents(self, 
-                              query: str, 
+    def search_legal_documents(self,
+                              query: str,
                               score_threshold: float = 0.4) -> List[Dict[str, Any]]:
         """
         Search legal documents using hybrid search (semantic + keyword).
-        
+
         Args:
             query: User's legal query
             score_threshold: Minimum relevance score
-            
+
         Returns:
             List of relevant document chunks with metadata
         """
@@ -106,7 +118,15 @@ class LegalRAGSystem:
             return []
     
     def format_search_results(self, results: List[Dict[str, Any]]) -> str:
-        """Format search results into context for GPT."""
+        """
+        Format search results into context for GPT.
+
+        Args:
+            results: List of search results with payload and scores
+
+        Returns:
+            Formatted string containing document information
+        """
         if not results:
             return "No relevant legal documents found."
         
@@ -136,7 +156,16 @@ Content: {text_preview}{"..." if len(text) > 500 else ""}
         return "\n".join(context_parts)
     
     def generate_summary(self, query: str, context: str) -> str:
-        """Generate a concise summary using OpenAI API."""
+        """
+        Generate a concise summary using OpenAI API.
+
+        Args:
+            query: Original user query
+            context: Formatted search results context
+
+        Returns:
+            Generated summary text or fallback message if OpenAI unavailable
+        """
         if not OPENAI_AVAILABLE:
             return f"OpenAI not available. Found {len(context.split('Document'))-1} relevant documents for query: '{query}'"
         
@@ -177,18 +206,18 @@ Please provide a concise 150-word summary that answers the query based on these 
             logger.error(f"OpenAI API error: {e}")
             return f"Error generating summary. Found relevant information about: {query}"
     
-    def query(self, 
-             question: str, 
+    def query(self,
+             question: str,
              score_threshold: float = 0.4,
              show_sources: bool = True) -> Dict[str, Any]:
         """
         Complete RAG query: search + generate summary.
-        
+
         Args:
             question: Legal question to answer
             score_threshold: Minimum relevance score
             show_sources: Whether to include source information
-            
+
         Returns:
             Dictionary with summary, sources, and metadata
         """
@@ -243,8 +272,13 @@ Please provide a concise 150-word summary that answers the query based on these 
         }
 
 
-def main():
-    """Command line interface for the Legal RAG system."""
+def main() -> int:
+    """
+    Command line interface for the Legal RAG system.
+
+    Returns:
+        Exit code (0 for success, 1 for error)
+    """
     parser = argparse.ArgumentParser(description="Legal RAG Query System")
     parser.add_argument("--collection", default="caselaw-chunks",
                        help="Qdrant collection name")

@@ -1,15 +1,16 @@
 # Legal Document Processing Pipeline
 
-A legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant (Local or Cloud) for hybrid search. The system uses BGE embeddings for dense vector representations and BM25 for sparse vector representations.
+A production-ready legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant (Local or Cloud) for hybrid search. Features full Airflow orchestration with Redis-based distributed rate limiting (5000 API calls/hour) and both direct execution and DAG-based processing modes.
 
 ## 🎯 Overview
 
 This pipeline provides core functionality for legal document processing and retrieval:
 
-- **Data Ingestion**: Fetches legal cases from CourtListener API
-- **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with boundary and text overlap across chunks.
-- **Vector Processing**: Creates embeddings using BGE models (default is BAAI/bge-small-en-v1.5) and BM25 for sparse embeddings.
+- **Data Ingestion**: Fetches legal cases from CourtListener API with Redis-based rate limiting (5000 calls/hour)
+- **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with boundary and text overlap across chunks
+- **Vector Processing**: Creates embeddings using BGE models (default is BAAI/bge-small-en-v1.5) and BM25 for sparse embeddings
 - **Storage**: Qdrant vector database (local or cloud) with hybrid search capabilities
+- **Orchestration**: Full Airflow DAG execution with task dependencies and monitoring
 - **Query Interface**: RAG-based legal document retrieval system available in legal_rag_query.py
 
 ## 📁 File Structure
@@ -20,9 +21,17 @@ lawlm/
 ├── requirements.txt            # Dependencies
 ├── main.py                     # Main pipeline orchestrator to ingest, process, and upload to vector database
 ├── config.py                   # Configuration management
-├── vector_processor.py         # Text extraction, deduplication logic for existing records, and vector processing 
+├── vector_processor.py         # Text extraction, deduplication logic for existing records, and vector processing
 ├── legal_rag_query.py          # RAG system for querying the vector database in command line
-├── manage_qdrant.sh            # This helps you quickly start up qdrant locally via Docker
+├── manage_qdrant.sh            # Qdrant Docker management script
+├── run_airflow.sh              # Airflow management script with Redis integration
+├── airflow/                    # Airflow orchestration infrastructure
+│   ├── dags/
+│   │   └── courtlistener_pipeline_dag.py  # Main DAG implementation
+│   ├── hooks/
+│   │   └── redis_rate_limit_hook.py       # Redis hook for distributed rate limiting
+│   ├── airflow.cfg             # Airflow configuration
+│   └── webserver_config.py     # Webserver configuration
 ├── data/                       # Working directory for pipeline files (created after main.py is run)
 ├── qdrant_storage/             # Local Qdrant storage (created if Qdrant is run locally and after main.py is run)
 ```
@@ -33,7 +42,8 @@ lawlm/
 
 1. **Python 3.10** with pip (preferrably in an isolated conda environment)
 2. **CourtListener API key** ([get one here](https://www.courtlistener.com/api/))
-3. **Qdrant API** (if using cloud deployment, otherwise will save locally)
+3. **Docker** (for Redis and local Qdrant instances)
+4. **Qdrant API** (if using cloud deployment, otherwise will save locally)
 
 ### Installation
 
@@ -59,15 +69,69 @@ cp .env.template .env
 
 ### Environment Configuration
 
-Configure your `.env` file with the required credentials (follow .env.template for more information)
+Configure your `.env` file with the required credentials:
+
+**Required for Data Ingestion:**
+- `CASELAW_API_KEY`: CourtListener API key for legal document access
+
+**For Qdrant Cloud Deployment:**
+- `QDRANT_URL`: Cluster URL (e.g., https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333)
+- `QDRANT_API_KEY`: Cloud API key
+- `QDRANT_CLUSTER_NAME`: Cluster name
+- `USE_CLOUD`: Set to "true" for cloud deployment, "false" for local
+
+**For RAG Queries:**
+- `OPENAI_API_KEY`: Required for legal_rag_query.py to generate responses
+
+**For Redis (Airflow Rate Limiting):**
+- `AIRFLOW_CONN_REDIS_DEFAULT`: Fallback connection string (redis://localhost:6379/0)
 
 ### Running this Repository:
 
-#### Using Qdrant locally with a Docker Container
+#### Option 1: Airflow Orchestration (Recommended)
+
+```bash
+# Start Airflow services and Redis (local)
+./run_airflow.sh                 # Start/ensure services are running
+./manage_qdrant.sh start         # If you're using local qdrant
+
+# Reset Airflow services, reset Redis and delete Database
+./run_airflow.sh --reset
+
+# Stop Airflow services and Redis (database remains)
+./run_airflow.sh --stop
+
+# Start Airflow services and Redis (cloud)
+QDRANT_URL: Cluster URL (e.g., https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333)
+QDRANT_API_KEY: Cloud API key
+QDRANT_CLUSTER_NAME: Cluster name
+USE_CLOUD: true
+
+# run airflow
+./run_airflow.sh
+
+# Access Airflow UI
+# Navigate to http://localhost:8080 (admin/admin)
+```
+
+#### Option 2: Manual Execution
+
 ```bash
 # Enable qdrant usage locally via Docker
 ./manage_qdrant.sh start # Starts local instance
+```
 
+```bash
+# Run complete pipeline (NOTE: schema for scotus works. Not tested for other courts at this time)
+python main.py --court scotus --num-dockets 5
+
+# Check pipeline status (including key configurations)
+python main.py --status
+```
+
+##### Useful qdrant docker commands
+```bash
+# Other useful ./manage_qdrant.sh commands
 ./manage_qdrant.sh stop # Stops the local instance
 
 ./manage_qdrant.sh restart # Restarts local instance
@@ -81,33 +145,15 @@ Configure your `.env` file with the required credentials (follow .env.template f
 ./manage_qdrant.sh help # Displays the list of commands and helpful information
 ```
 
-```bash
-# Run complete pipeline (NOTE: schema for scotus works. Not tested for other courts at this time)
-python main.py --court scotus --num-dockets 5
-
-# Check pipeline status (including key configurations)
-python main.py --status
-```
 #### Using Qdrant cloud
 
-Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME. This will ensure the switch from local to cloud upload. **NOTE**: Make sure you shut down any local qdrant with: 
-
-```bash
-./manage_qdrant.sh stop 
-```
-
-And then you can run:
-```bash
-python main.py --court scotus --num-dockets 5
-```
-
-And Qdrant cloud will recieve the text chunks.
+Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME and make sure you set USE_CLOUD=true. This will ensure the switch from local to cloud upload of text chunks.
 
 ##### Running legal_rag_query.py
 
 Prerequisites: 
 1. Ensure you have a working OPENAI_API_KEY in .env.
-2. Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME. 
+2. Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME. Make sure USE_CLOUD=true 
 3. Ensure there are at least 5-10 dockets in Qdrant cloud for better semantic search prior to querying OPEN AI. 
 
 ```bash
@@ -130,10 +176,10 @@ python legal_rag_query.py --query "Can you tell me about the case Noem v. Vasque
 Tasks to be implemented in future iterations:
 
 - ~~Create a hybrid search method in pipeline for enhanced querying in RAG~~
+- ~~Implement cron jobs/orchestrators to automate ingestion cycles daily~~
 - Allow users to use different embedding models and llms for vector embedding and querying
 - Add test suite for pipeline components
 - Use CourtListeners webhook to pull newer cases and auto update qdrant
-- Implement cron jobs/orchestrators to automate ingestion cycles daily
 - Enable batch processing when large amounts (>20) dockets are requested 
 
 ## 🤝 Contributing

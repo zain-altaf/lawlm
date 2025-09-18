@@ -9,6 +9,8 @@ This module orchestrates the complete pipeline:
 
 Provides a single entry point for the entire processing workflow.
 """
+
+# Standard library imports
 import argparse
 import json
 import logging
@@ -20,10 +22,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Third-party imports
 import requests
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# Local imports
 from config import PipelineConfig, load_config
 
 # Configure logging first
@@ -125,7 +129,11 @@ class LegalDocumentPipeline:
 
 
     def get_pipeline_status(self) -> Dict[str, Any]:
-        """Get current pipeline status and available data."""
+        """Get current pipeline status and available data.
+
+        Returns:
+            Dict containing working directory, files, and configuration summary
+        """
         return {
             'working_dir': str(self.working_dir),
             'files': [str(f) for f in self.working_dir.glob("*")],
@@ -136,9 +144,12 @@ class LegalDocumentPipeline:
     def run_pipeline(self) -> Dict[str, Any]:
         """
         Run the legal document processing pipeline.
-        Fetch existing dockets to prevent duplication.
-        Process new dockets only.
-        Includes smart pagination for efficient API calls.
+
+        Fetches existing dockets to prevent duplication, processes new dockets only,
+        and includes smart pagination for efficient API calls.
+
+        Returns:
+            Dict containing pipeline execution results and statistics
         """
         logger.info(f"🚀 Starting legal document processing pipeline")
         logger.info(f"🏛️ Court: {self.config.data_ingestion.court}, Dockets: {self.config.data_ingestion.num_dockets}")
@@ -345,7 +356,16 @@ class LegalDocumentPipeline:
     def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
         """
         Fetch dockets using cursor-based pagination starting from oldest first.
+
         This ensures consistent ordering and prevents pagination issues with new dockets.
+
+        Args:
+            court: Court identifier (e.g., 'scotus')
+            num_dockets: Number of new dockets to fetch
+            existing_dockets: Set of existing docket IDs to avoid duplicates
+
+        Returns:
+            List of new docket dictionaries
         """
 
         load_dotenv()
@@ -460,8 +480,15 @@ class LegalDocumentPipeline:
     def _fix_chunk_overlaps(self, chunks: List[str]) -> List[str]:
         """
         Fix chunk overlaps to ensure they start and end at proper sentence boundaries.
+
         This addresses the issue where RecursiveCharacterTextSplitter's character-based
         overlap creates fragments like 'Moreover, the plaintiffs' contention...'
+
+        Args:
+            chunks: List of text chunks to fix
+
+        Returns:
+            List of cleaned chunks with proper sentence boundaries
         """
         if not chunks:
             return chunks
@@ -487,7 +514,15 @@ class LegalDocumentPipeline:
     
 
     def _fix_chunk_start(self, chunk: str) -> str:
-        """Fix the start of a chunk to begin at a proper sentence boundary."""
+        """
+        Fix the start of a chunk to begin at a proper sentence boundary.
+
+        Args:
+            chunk: Text chunk to fix
+
+        Returns:
+            Fixed chunk starting at a sentence boundary
+        """
         if not chunk:
             return chunk
             
@@ -514,7 +549,15 @@ class LegalDocumentPipeline:
     
 
     def _fix_chunk_end(self, chunk: str) -> str:
-        """Fix the end of a chunk to end at a complete sentence."""
+        """
+        Fix the end of a chunk to end at a complete sentence.
+
+        Args:
+            chunk: Text chunk to fix
+
+        Returns:
+            Fixed chunk ending at a complete sentence
+        """
         if not chunk:
             return chunk
             
@@ -543,7 +586,15 @@ class LegalDocumentPipeline:
     
 
     def _starts_at_sentence_boundary(self, text: str) -> bool:
-        """Check if text starts at a natural sentence boundary."""
+        """
+        Check if text starts at a natural sentence boundary.
+
+        Args:
+            text: Text to check
+
+        Returns:
+            True if text starts at a good sentence boundary
+        """
         if not text:
             return False
             
@@ -565,8 +616,18 @@ class LegalDocumentPipeline:
         return False
     
 
-    def _fetch_docket_clusters_and_opinions(self, docket: Dict[str, Any], court: str, vector_processor=None) -> List[Dict[str, Any]]:
-        """Fetch and process all clusters and opinions for a specific docket object."""
+    def _fetch_docket_clusters_and_opinions(self, docket: Dict[str, Any], court: str, vector_processor=None) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Fetch and process all clusters and opinions for a specific docket object.
+
+        Args:
+            docket: Docket dictionary from API
+            court: Court identifier
+            vector_processor: Optional vector processor for text enhancement
+
+        Returns:
+            Tuple of (clusters, opinions) lists
+        """
 
         load_dotenv()
         api_key = os.getenv('CASELAW_API_KEY')
@@ -674,7 +735,12 @@ class LegalDocumentPipeline:
         logger.info(f"📄 Found {len(opinions)} opinions and {len(clusters)} clusters in docket {docket_id}")
         return clusters, opinions
 
-def main():
+def main() -> None:
+    """
+    Main entry point for the legal document processing pipeline.
+
+    Parses command line arguments, loads configuration, and runs the pipeline.
+    """
     parser = argparse.ArgumentParser(
         description="Unified Legal Document Processing Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter

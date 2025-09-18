@@ -44,7 +44,10 @@ airflow-*.log
 airflow-*.out
 airflow-*.err
 airflow/logs/*
+airflow/dags/data/*
 
 CLAUDE.md
 
 context/*
+
+tests/*
