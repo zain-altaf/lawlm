@@ -467,3 +467,170 @@ def load_config(config_file: Optional[str] = None) -> PipelineConfig:
         logger.info("📋 Using default configuration (no config file found)")
     
     return config
+
+
+def validate_configuration_sources() -> Dict[str, Any]:
+    """
+    Validate configuration sources and provide clear guidance on conflicts.
+
+    This function addresses the configuration complexity issue by:
+    1. Checking all configuration sources and their precedence
+    2. Validating USE_CLOUD flag logic explicitly
+    3. Identifying potential configuration conflicts
+    4. Providing clear guidance for resolution
+
+    Returns:
+        Dictionary with validation results and recommendations
+    """
+    validation_result = {
+        'status': 'success',
+        'issues': [],
+        'recommendations': [],
+        'configuration_sources': {},
+        'use_cloud_validation': {}
+    }
+
+    # Check configuration source hierarchy
+    config_sources = {
+        'environment_variables': {},
+        'config_file': None,
+        'defaults': {}
+    }
+
+    # Critical environment variables
+    critical_env_vars = [
+        'CASELAW_API_KEY',
+        'USE_CLOUD',
+        'QDRANT_URL',
+        'QDRANT_API_KEY',
+        'QDRANT_CLUSTER_NAME'
+    ]
+
+    for var in critical_env_vars:
+        value = os.getenv(var)
+        if value:
+            config_sources['environment_variables'][var] = value
+
+    # Check for configuration file
+    config_paths = [
+        "config.json",
+        os.path.expanduser("~/.lawlm/config.json"),
+        "/etc/lawlm/config.json"
+    ]
+
+    for path in config_paths:
+        if Path(path).exists():
+            config_sources['config_file'] = path
+            break
+
+    # Validate USE_CLOUD flag logic
+    use_cloud_raw = os.getenv("USE_CLOUD", "false").lower()
+    use_cloud = use_cloud_raw in ("true", "1", "yes", "on")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY")
+    qdrant_url = os.getenv("QDRANT_URL", "")
+
+    validation_result['use_cloud_validation'] = {
+        'use_cloud_raw': use_cloud_raw,
+        'use_cloud_resolved': use_cloud,
+        'has_api_key': bool(qdrant_api_key),
+        'qdrant_url': qdrant_url,
+        'is_cloud_url': "cloud.qdrant.io" in qdrant_url
+    }
+
+    # Configuration validation logic
+    if use_cloud:
+        if not qdrant_api_key:
+            validation_result['issues'].append(
+                "USE_CLOUD=true but QDRANT_API_KEY is not set. Cloud usage requires API key."
+            )
+            validation_result['recommendations'].append(
+                "Set QDRANT_API_KEY environment variable for cloud authentication"
+            )
+
+        if not qdrant_url or "cloud.qdrant.io" not in qdrant_url:
+            validation_result['issues'].append(
+                "USE_CLOUD=true but QDRANT_URL does not contain cloud.qdrant.io domain"
+            )
+            validation_result['recommendations'].append(
+                "Set QDRANT_URL to a valid cloud URL (e.g., https://your-cluster.cloud.qdrant.io:6333)"
+            )
+    else:
+        if qdrant_url and "cloud.qdrant.io" in qdrant_url:
+            validation_result['recommendations'].append(
+                "Cloud URL detected but USE_CLOUD=false. Consider setting USE_CLOUD=true for cloud usage"
+            )
+
+    # Check for configuration conflicts
+    if config_sources['config_file'] and config_sources['environment_variables']:
+        validation_result['recommendations'].append(
+            f"Multiple configuration sources detected: file ({config_sources['config_file']}) and environment variables. "
+            "Environment variables take precedence."
+        )
+
+    # Check if critical API key is missing
+    if not os.getenv("CASELAW_API_KEY"):
+        validation_result['issues'].append(
+            "CASELAW_API_KEY not set - data ingestion will fail"
+        )
+        validation_result['recommendations'].append(
+            "Set CASELAW_API_KEY environment variable from https://www.courtlistener.com/api/"
+        )
+
+    # Set overall status
+    validation_result['configuration_sources'] = config_sources
+    if validation_result['issues']:
+        validation_result['status'] = 'warning' if not any('fail' in issue.lower() for issue in validation_result['issues']) else 'error'
+
+    return validation_result
+
+
+def print_configuration_guidance() -> None:
+    """
+    Print clear guidance on configuration management to reduce complexity.
+    """
+    validation = validate_configuration_sources()
+
+    print("🔧 Configuration Sources & Precedence:")
+    print("  1. Environment Variables (highest precedence)")
+    print("  2. Config file (if found)")
+    print("  3. Built-in defaults (lowest precedence)")
+    print()
+
+    if validation['configuration_sources']['config_file']:
+        print(f"📄 Config file found: {validation['configuration_sources']['config_file']}")
+    else:
+        print("📄 No config file found - using environment variables and defaults")
+
+    print()
+    print("🌐 USE_CLOUD Configuration:")
+    cloud_val = validation['use_cloud_validation']
+    print(f"  Raw value: '{cloud_val['use_cloud_raw']}'")
+    print(f"  Resolved: {cloud_val['use_cloud_resolved']}")
+    print(f"  Has API key: {cloud_val['has_api_key']}")
+    print(f"  QDRANT_URL: {cloud_val['qdrant_url'] or 'not set'}")
+    print(f"  Is cloud URL: {cloud_val['is_cloud_url']}")
+
+    if validation['issues']:
+        print()
+        print("⚠️ Configuration Issues:")
+        for issue in validation['issues']:
+            print(f"  - {issue}")
+
+    if validation['recommendations']:
+        print()
+        print("💡 Recommendations:")
+        for rec in validation['recommendations']:
+            print(f"  - {rec}")
+
+    print()
+    print("📋 Quick Setup Guide:")
+    print("  For LOCAL usage:")
+    print("    export USE_CLOUD=false")
+    print("    export CASELAW_API_KEY=your_key_here")
+    print("    # Start local Qdrant: ./manage_qdrant.sh start")
+    print()
+    print("  For CLOUD usage:")
+    print("    export USE_CLOUD=true")
+    print("    export QDRANT_URL=https://your-cluster.cloud.qdrant.io:6333")
+    print("    export QDRANT_API_KEY=your_api_key")
+    print("    export CASELAW_API_KEY=your_key_here")

@@ -47,7 +47,10 @@ CALL_LIMIT_PER_HOUR = 5000
 TARGET_CALLS_PER_HOUR = 4900
 SAFETY_BUFFER = int(os.getenv('COURTLISTENER_SAFETY_BUFFER', '25'))
 MIN_CALLS_PER_DOCKET = int(os.getenv('COURTLISTENER_MIN_CALLS_PER_DOCKET', '25'))
-MAX_VECTOR_PROCESSOR_POOL_SIZE = int(os.getenv('MAX_VECTOR_PROCESSOR_POOL_SIZE', '3'))
+# Vector Processor Pool Configuration
+# For high-volume processing, increase pool size (recommended: 8-16 for production)
+# Each processor uses ~2GB RAM, adjust based on available memory
+MAX_VECTOR_PROCESSOR_POOL_SIZE = max(1, min(32, int(os.getenv('MAX_VECTOR_PROCESSOR_POOL_SIZE', '3'))))
 REDIS_COUNTER_TTL_HOURS = int(os.getenv('REDIS_COUNTER_TTL_HOURS', '2'))
 REDIS_STATE_TTL_HOURS = int(os.getenv('REDIS_STATE_TTL_HOURS', '25'))
 REDIS_CONN_ID = "redis_default"
@@ -243,10 +246,61 @@ def courtlistener_pipeline_dag() -> Any:
             task_logger.info(f"  - Safety Buffer: {SAFETY_BUFFER} calls")
             task_logger.info(f"  - Vector Pool Size: {MAX_VECTOR_PROCESSOR_POOL_SIZE}")
             task_logger.info(f"  - Redis TTL: Counter={REDIS_COUNTER_TTL_HOURS}h, State={REDIS_STATE_TTL_HOURS}h")
+
+            # Provide guidance on pool size optimization
+            if MAX_VECTOR_PROCESSOR_POOL_SIZE <= 3:
+                task_logger.warning(f"⚠️ Vector processor pool size is {MAX_VECTOR_PROCESSOR_POOL_SIZE}. "
+                                  f"For high-volume processing, consider increasing MAX_VECTOR_PROCESSOR_POOL_SIZE to 8-16 "
+                                  f"(requires ~{MAX_VECTOR_PROCESSOR_POOL_SIZE * 2}GB RAM per processor)")
+            elif MAX_VECTOR_PROCESSOR_POOL_SIZE > 16:
+                task_logger.warning(f"⚠️ Vector processor pool size is {MAX_VECTOR_PROCESSOR_POOL_SIZE}. "
+                                  f"This may consume significant memory (~{MAX_VECTOR_PROCESSOR_POOL_SIZE * 2}GB). "
+                                  f"Monitor system resources carefully.")
             return True
 
     # Validate configuration at DAG initialization
     config_valid = validate_dag_configuration()
+
+    # Perform comprehensive configuration validation for USE_CLOUD and source clarity
+    def validate_and_log_configuration_sources() -> None:
+        """Log detailed configuration source information to reduce complexity."""
+        try:
+            from config import validate_configuration_sources
+            validation = validate_configuration_sources()
+
+            task_logger.info("🔧 Configuration Source Analysis:")
+            if validation['configuration_sources']['config_file']:
+                task_logger.info(f"  📄 Config file: {validation['configuration_sources']['config_file']}")
+            else:
+                task_logger.info("  📄 No config file found - using environment variables")
+
+            env_vars = validation['configuration_sources']['environment_variables']
+            if env_vars:
+                task_logger.info(f"  🌍 Environment variables set: {', '.join(env_vars.keys())}")
+
+            # Log USE_CLOUD validation details
+            cloud_val = validation['use_cloud_validation']
+            task_logger.info(f"🌐 USE_CLOUD Analysis:")
+            task_logger.info(f"  Raw value: '{cloud_val['use_cloud_raw']}'")
+            task_logger.info(f"  Resolved to: {cloud_val['use_cloud_resolved']}")
+            task_logger.info(f"  QDRANT_URL: {cloud_val['qdrant_url'] or 'not set'}")
+            task_logger.info(f"  Has API key: {cloud_val['has_api_key']}")
+            task_logger.info(f"  Is cloud URL: {cloud_val['is_cloud_url']}")
+
+            if validation['issues']:
+                task_logger.warning("⚠️ Configuration Issues Found:")
+                for issue in validation['issues']:
+                    task_logger.warning(f"  - {issue}")
+
+            if validation['recommendations']:
+                task_logger.info("💡 Configuration Recommendations:")
+                for rec in validation['recommendations']:
+                    task_logger.info(f"  - {rec}")
+        except Exception as e:
+            task_logger.warning(f"Configuration source validation failed: {e}")
+
+    # Run configuration source validation
+    validate_and_log_configuration_sources()
 
     def classify_and_handle_error(error: Exception, context: str, docket_id: Optional[int] = None) -> None:
         """

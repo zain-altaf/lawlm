@@ -877,7 +877,26 @@ def main() -> None:
 
     if args.status:
         status = pipeline.get_pipeline_status()
-        print(json.dumps(status, indent=2))
+
+        # Add configuration diagnostics to status output
+        try:
+            from config import validate_configuration_sources, print_configuration_guidance
+
+            print("="*60)
+            print("📊 PIPELINE STATUS")
+            print("="*60)
+            print(json.dumps(status, indent=2))
+
+            print("\n" + "="*60)
+            print("🔧 CONFIGURATION DIAGNOSTICS")
+            print("="*60)
+
+            # Run configuration validation and print guidance
+            print_configuration_guidance()
+
+        except ImportError:
+            print("Configuration diagnostics not available")
+            print(json.dumps(status, indent=2))
         return
 
     # Run pipeline
