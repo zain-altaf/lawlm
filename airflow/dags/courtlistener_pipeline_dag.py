@@ -32,8 +32,11 @@ from airflow.hooks.postgres_hook import PostgresHook
 from airflow.models import Variable
 
 # Add the project root to Python path for imports
-sys.path.append('/root/lawlm')
-sys.path.append('/root/lawlm/airflow')
+import os
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+airflow_root = os.path.join(project_root, 'airflow')
+sys.path.append(project_root)
+sys.path.append(airflow_root)
 
 # Import custom Redis hook
 from hooks.redis_rate_limit_hook import RedisRateLimitHook
@@ -42,6 +45,8 @@ from hooks.redis_rate_limit_hook import RedisRateLimitHook
 API_BASE_URL = "https://www.courtlistener.com/api/rest/v4"
 CALL_LIMIT_PER_HOUR = 5000
 TARGET_CALLS_PER_HOUR = 4900
+SAFETY_BUFFER = int(os.getenv('COURTLISTENER_SAFETY_BUFFER', '25'))
+MIN_CALLS_PER_DOCKET = int(os.getenv('COURTLISTENER_MIN_CALLS_PER_DOCKET', '25'))
 REDIS_CONN_ID = "redis_default"
 METASTORE_CONN_ID = "postgres_default"
 API_POOL_NAME = "courtlistener_api_pool"
@@ -344,8 +349,8 @@ def courtlistener_pipeline_dag():
             boundary_check = redis_hook.check_hour_boundary_and_reset()
             task_logger.info(f"⏰ Hour boundary check: {boundary_check}")
 
-            # Adjust safety buffer for more realistic usage (was 50, now 25)
-            safety_buffer = 25
+            # Adjust safety buffer for more realistic usage
+            safety_buffer = SAFETY_BUFFER
 
             # Determine if pipeline can proceed with enhanced logic
             redis_can_proceed = rate_status.get('can_proceed', False)
@@ -407,7 +412,7 @@ def courtlistener_pipeline_dag():
 
                 limit = 5000
                 remaining = max(0, limit - current_count)
-                can_proceed = current_count < (limit - 25)  # Reduced safety buffer
+                can_proceed = current_count < (limit - SAFETY_BUFFER)  # Configurable safety buffer
 
                 simple_result = {
                     'current_hour': current_hour,
@@ -417,7 +422,7 @@ def courtlistener_pipeline_dag():
                     'can_proceed': can_proceed,
                     'redis_source': True,
                     'simple_retry_used': True,
-                    'safety_buffer_used': 25,
+                    'safety_buffer_used': SAFETY_BUFFER,
                     'redis_error': str(e)
                 }
 
@@ -567,7 +572,7 @@ def courtlistener_pipeline_dag():
                 }
 
             # Safety check: ensure we have minimum calls for this docket
-            if rate_status['api_calls_remaining'] < 25:
+            if rate_status['api_calls_remaining'] < MIN_CALLS_PER_DOCKET:
                 task_logger.warning(f"Insufficient remaining calls ({rate_status['api_calls_remaining']}) for docket {docket_id}")
                 return {
                     "docket_id": docket_id,

@@ -37,6 +37,97 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def sanitize_url_for_logging(url: str) -> str:
+    """Sanitize URLs to remove sensitive parameters before logging."""
+    # Remove common sensitive parameters
+    sensitive_params = ['api_key', 'token', 'key', 'password', 'secret']
+    parsed = urllib.parse.urlparse(url)
+
+    if parsed.query:
+        params = urllib.parse.parse_qs(parsed.query)
+        sanitized_params = {}
+
+        for key, values in params.items():
+            if any(sensitive_key in key.lower() for sensitive_key in sensitive_params):
+                sanitized_params[key] = ['***REDACTED***']
+            else:
+                sanitized_params[key] = values
+
+        sanitized_query = urllib.parse.urlencode(sanitized_params, doseq=True)
+        sanitized_url = urllib.parse.urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, sanitized_query, parsed.fragment
+        ))
+        return sanitized_url
+
+    return url
+
+
+def sanitize_exception_message(message: str) -> str:
+    """Sanitize exception messages to remove potential API keys."""
+    # Pattern to match common API key formats
+    patterns = [
+        r'(api[_-]?key[=:]\s*)([a-zA-Z0-9\-_]{6,})',  # Reduced minimum length
+        r'(token[=:]\s*)([a-zA-Z0-9\-_]{6,})',          # Reduced minimum length
+        r'(authorization[=:]\s*token\s+)([a-zA-Z0-9\-_]+)',
+        r'(token\s+)([a-zA-Z0-9\-_]{6,})',              # Added pattern for "token abc123"
+    ]
+
+    sanitized = str(message)
+    for pattern in patterns:
+        sanitized = re.sub(pattern, r'\1***REDACTED***', sanitized, flags=re.IGNORECASE)
+
+    return sanitized
+
+
+class CircuitBreaker:
+    """Simple circuit breaker implementation for API calls."""
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+
+    def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection."""
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                logger.info("Circuit breaker state: HALF_OPEN - attempting recovery")
+            else:
+                raise Exception("Circuit breaker is OPEN - API calls blocked")
+
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return result
+        except Exception as e:
+            self._on_failure()
+            raise
+
+    def _on_success(self):
+        """Reset circuit breaker on successful call."""
+        self.failure_count = 0
+        if self.state == "HALF_OPEN":
+            self.state = "CLOSED"
+            logger.info("Circuit breaker state: CLOSED - recovery successful")
+
+    def _on_failure(self):
+        """Track failure and potentially open circuit."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+            logger.warning(f"Circuit breaker state: OPEN - {self.failure_count} failures detected")
+
+    def is_open(self) -> bool:
+        """Check if circuit breaker is open."""
+        return self.state == "OPEN"
+
 # Handle vector processor import gracefully
 try:
     from vector_processor import EnhancedVectorProcessor
@@ -46,9 +137,12 @@ except ImportError as e:
     EnhancedVectorProcessor = None
     VECTOR_PROCESSOR_AVAILABLE = False
 
+# Global circuit breaker for API calls
+api_circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+
 
 def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30,
-                    max_retries: int = 3, delay: int = 5) -> Optional[Dict[str, Any]]:
+                    max_retries: int = 3, delay: int = 5, circuit_breaker: CircuitBreaker = None) -> Optional[Dict[str, Any]]:
     """
     Fetch data from URL with retry logic for 5xx server errors and 429 rate limiting.
 
@@ -58,13 +152,21 @@ def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30
         timeout: Request timeout in seconds
         max_retries: Maximum number of retry attempts
         delay: Seconds to wait between retries
+        circuit_breaker: Optional circuit breaker for protection
 
     Returns:
         JSON response data or None if all retries failed
     """
+    def _make_request():
+        return requests.get(url, headers=headers or {}, timeout=timeout)
+
     for attempt in range(max_retries + 1):  # +1 for initial attempt
         try:
-            response = requests.get(url, headers=headers or {}, timeout=timeout)
+            # Use circuit breaker if provided
+            if circuit_breaker:
+                response = circuit_breaker.call(_make_request)
+            else:
+                response = _make_request()
             
             # Success - return the data
             if response.status_code == 200:
@@ -73,37 +175,42 @@ def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30
             # Rate limit (429) - respect Retry-After header
             elif response.status_code == 429:
                 retry_after = int(response.headers.get('Retry-After', 60))
-                logger.warning(f"Rate limited (429) for {url} - waiting {retry_after}s before retry (attempt {attempt + 1}/{max_retries})")
+                safe_url = sanitize_url_for_logging(url)
+                logger.warning(f"Rate limited (429) for {safe_url} - waiting {retry_after}s before retry (attempt {attempt + 1}/{max_retries})")
 
                 if attempt < max_retries:
                     time.sleep(retry_after)
                     continue
                 else:
-                    logger.error(f"Rate limited for {url} - max retries exceeded")
+                    logger.error(f"Rate limited for {safe_url} - max retries exceeded")
                     return None
 
             # Other client errors (4xx) - don't retry, content doesn't exist
             elif 400 <= response.status_code < 500:
-                logger.warning(f"Client error {response.status_code} for {url} - not retrying")
+                safe_url = sanitize_url_for_logging(url)
+                logger.warning(f"Client error {response.status_code} for {safe_url} - not retrying")
                 return None
-            
+
             # Server errors (5xx) - retry with delay
             elif response.status_code >= 500:
+                safe_url = sanitize_url_for_logging(url)
                 if attempt < max_retries:
-                    logger.warning(f"Server error {response.status_code} for {url} - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"Server error {response.status_code} for {safe_url} - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(delay)
                     continue
                 else:
-                    logger.error(f"Server error {response.status_code} for {url} - max retries exceeded")
+                    logger.error(f"Server error {response.status_code} for {safe_url} - max retries exceeded")
                     return None
-                    
+
         except requests.exceptions.RequestException as e:
+            safe_url = sanitize_url_for_logging(url)
+            safe_error = sanitize_exception_message(str(e))
             if attempt < max_retries:
-                logger.warning(f"Request exception for {url}: {e} - retrying in {delay}s")
+                logger.warning(f"Request exception for {safe_url}: {safe_error} - retrying in {delay}s")
                 time.sleep(delay)
                 continue
             else:
-                logger.error(f"Request failed for {url} after {max_retries} retries: {e}")
+                logger.error(f"Request failed for {safe_url} after {max_retries} retries: {safe_error}")
                 return None
     
     return None
@@ -408,7 +515,8 @@ class LegalDocumentPipeline:
                     headers=headers,
                     timeout=30,
                     max_retries=3,
-                    delay=5
+                    delay=5,
+                    circuit_breaker=api_circuit_breaker
                 )
                 
                 if response_data is None:
@@ -648,7 +756,8 @@ class LegalDocumentPipeline:
                     headers=headers,
                     timeout=30,
                     max_retries=3,
-                    delay=5
+                    delay=5,
+                    circuit_breaker=api_circuit_breaker
                 )
                 if cluster is None:
                     logger.warning(f"Failed to fetch cluster {cluster_url} after retries")
@@ -664,7 +773,8 @@ class LegalDocumentPipeline:
                             headers=headers,
                             timeout=30,
                             max_retries=3,
-                            delay=5
+                            delay=5,
+                            circuit_breaker=api_circuit_breaker
                         )
                         if opinion is None:
                             logger.warning(f"Failed to fetch opinion {opinion_url} after retries")

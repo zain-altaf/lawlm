@@ -29,6 +29,56 @@ from airflow.models import Connection
 logger = logging.getLogger(__name__)
 
 
+def validate_redis_key(key: str) -> bool:
+    """Validate Redis key format to prevent injection attacks."""
+    if not isinstance(key, str):
+        return False
+    if len(key) > 512:  # Redis max key length
+        return False
+    # Prevent special characters that could be used for injection
+    dangerous_chars = ['\r', '\n', '\t', '\x00', ' ', '"', "'", '\\']
+    return not any(char in key for char in dangerous_chars)
+
+
+def validate_redis_value(value: Any) -> bool:
+    """Validate Redis value to prevent injection attacks."""
+    if value is None:
+        return True
+    if isinstance(value, (str, bytes)):
+        if len(str(value)) > 1024 * 1024:  # 1MB limit
+            return False
+        # Check for dangerous patterns in string values
+        dangerous_patterns = ['EVAL', 'SCRIPT', 'CONFIG', 'FLUSHALL', 'FLUSHDB']
+        value_upper = str(value).upper()
+        return not any(pattern in value_upper for pattern in dangerous_patterns)
+    if isinstance(value, (int, float)):
+        return abs(value) < 10**15  # Reasonable numeric limits
+    if isinstance(value, (list, dict)):
+        return len(str(value)) < 1024 * 1024  # 1MB limit for serialized data
+    return True
+
+
+def sanitize_log_message(message: str, sensitive_keys: List[str] = None) -> str:
+    """Sanitize log messages to prevent sensitive data exposure."""
+    if sensitive_keys is None:
+        sensitive_keys = ['api_key', 'token', 'password', 'secret', 'key']
+
+    sanitized = message
+    for key in sensitive_keys:
+        # Replace various patterns that might contain sensitive data
+        patterns = [
+            f'{key}=([^\\s&]+)',
+            f'"{key}"\\s*:\\s*"([^"]+)"',
+            f"'{key}'\\s*:\\s*'([^']+)'",
+            f'{key}\\s*:\\s*([^\\s,}}]+)',
+        ]
+        for pattern in patterns:
+            import re
+            sanitized = re.sub(pattern, f'{key}=***REDACTED***', sanitized, flags=re.IGNORECASE)
+
+    return sanitized
+
+
 class RedisRateLimitHook(BaseHook):
     """
     Custom Redis Hook for distributed API rate limiting and state management.
@@ -330,8 +380,21 @@ class RedisRateLimitHook(BaseHook):
             Dictionary with increment result and current count
         """
         try:
+            # Input validation
+            if not isinstance(calls_to_add, int) or calls_to_add < 0:
+                raise ValueError("calls_to_add must be a non-negative integer")
+            if not isinstance(limit, int) or limit <= 0:
+                raise ValueError("limit must be a positive integer")
+            if not isinstance(ttl_hours, int) or ttl_hours <= 0:
+                raise ValueError("ttl_hours must be a positive integer")
+
             client = self.get_conn()
             counter_key = self.get_current_hour_key()
+
+            # Validate Redis key
+            if not validate_redis_key(counter_key):
+                raise ValueError(f"Invalid Redis key format: {counter_key}")
+
             ttl_seconds = ttl_hours * 3600
 
             # Ensure scripts are loaded

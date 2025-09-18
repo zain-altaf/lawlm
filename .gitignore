@@ -57,5 +57,3 @@ airflow/hooks/__pycache__/
 CLAUDE.md
 
 context/*
-
-tests/*
