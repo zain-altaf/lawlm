@@ -1,17 +1,27 @@
+# Core pipeline dependencies
 beautifulsoup4==4.12.3
-fastembed==0.7.3
 langchain==0.3.13
 langchain-text-splitters==0.3.3
 numpy==1.26.4
+openai==1.98.0
 python-dotenv==1.0.0
 qdrant-client==1.15.0
 requests==2.32.4
-scikit-learn==1.6.1
-scipy==1.13.1
 sentence-transformers==5.0.0
 torch==2.4.0
-torchvision==0.19.0
-torchaudio==2.4.0
 transformers==4.54.1
-openai==1.98.0
-psutil==5.9.0
+
+# Airflow dependencies for orchestration
+apache-airflow[postgres,celery]==2.7.3
+Flask-Limiter==3.5.0
+apache-airflow-providers-postgres==5.7.1
+apache-airflow-providers-redis==3.4.0
+backoff==2.2.1
+psycopg2-binary==2.9.7
+sqlalchemy==1.4.53
+werkzeug==2.3.7
+flask>=2.2,<2.3
+
+# Redis dependencies for caching and rate limiting
+redis>=4.5.2,<5.0.0
+hiredis==2.2.3

@@ -6,48 +6,41 @@ BAAI/bge-small-en-v1.5 for better legal domain performance. Optimized
 for semantically chunked legal documents.
 """
 
-from http import client
-import uuid
-import os
+# Standard library imports
 import json
 import logging
-import gc
-import subprocess
-import time
-from typing import List, Dict, Any, Optional
-from datetime import datetime
-from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient, models
-from dotenv import load_dotenv
-from sklearn.feature_extraction.text import TfidfVectorizer
-from scipy.sparse import csr_matrix
-import numpy as np
+import os
 import re
-from bs4 import BeautifulSoup
+import uuid
+from typing import Any, Dict, List, Optional
 
-# Handle torch import gracefully
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: PyTorch not available ({e}). CPU-only processing will be used.")
-    torch = None
-    TORCH_AVAILABLE = False
+# Third-party imports
+import numpy as np
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from qdrant_client import QdrantClient, models
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 
 class EnhancedVectorProcessor:
-    """Enhanced processor for semantic chunks using improved embeddings."""
+    """
+    Enhanced processor for semantic chunks using improved embeddings.
+
+    This processor creates vector embeddings for legal documents using BGE models
+    and manages storage in Qdrant vector database with both dense and sparse vectors.
+    """
     
-    def __init__(self, 
+    def __init__(self,
                  model_name: str = 'BAAI/bge-small-en-v1.5',
                  collection_name: str = "caselaw-chunks-vector",
-                 qdrant_url: str = None):
+                 qdrant_url: Optional[str] = None) -> None:
         """
         Initialize the enhanced vector processor.
-        
+
         Args:
             model_name: Name of the sentence transformer model (default: BAAI/bge-small-en-v1.5)
             collection_name: Name of the Qdrant collection
@@ -90,7 +83,16 @@ class EnhancedVectorProcessor:
     
     
     def _get_qdrant_client(self) -> QdrantClient:
-        """Initialize and return Qdrant client with robust local/cloud support."""
+        """
+        Initialize and return Qdrant client with robust local/cloud support.
+
+        Returns:
+            Configured QdrantClient instance
+
+        Raises:
+            ValueError: If cloud configuration is invalid
+            Exception: If connection fails
+        """
         try:
             # Check USE_CLOUD flag for explicit cloud/local selection
             use_cloud = os.getenv("USE_CLOUD", "false").lower() in ("true", "1", "yes", "on")
@@ -139,7 +141,12 @@ class EnhancedVectorProcessor:
     
 
     def get_existing_docket_ids(self) -> set:
-        """Get set of existing docket numbers in the collection."""
+        """
+        Get set of existing docket numbers in the collection.
+
+        Returns:
+            Set of existing docket IDs in the collection
+        """
         try:
             if not self.client.collection_exists(collection_name=self.collection_name):
                 return set()
@@ -173,10 +180,56 @@ class EnhancedVectorProcessor:
         except Exception as e:
             logger.warning(f"Could not get existing docket numbers: {e}")
             return set()
-    
-    
+
+    def remove_docket_from_collection(self, docket_id: int) -> bool:
+        """
+        Remove all points associated with a specific docket ID from the collection.
+
+        Args:
+            docket_id: The docket ID to remove
+
+        Returns:
+            bool: True if removal was successful, False otherwise
+        """
+        try:
+            # Create filter to match the docket_id
+
+            filter_condition = Filter(
+                must=[
+                    FieldCondition(
+                        key="docket_id",
+                        match=MatchValue(value=docket_id)
+                    )
+                ]
+            )
+
+            # Delete points matching the filter
+            result = self.client.delete(
+                collection_name=self.collection_name,
+                points_selector=filter_condition
+            )
+
+            if result:
+                logger.info(f"Successfully removed all points for docket ID {docket_id}")
+                return True
+            else:
+                logger.warning(f"No points found for docket ID {docket_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to remove docket {docket_id} from collection: {e}")
+            return False
+
     def extract_legal_info(self, text: str) -> Dict[str, Any]:
-        """Extract legal citations and entities from text using regex patterns."""
+        """
+        Extract legal citations and entities from text using regex patterns.
+
+        Args:
+            text: Text to extract legal information from
+
+        Returns:
+            Dictionary containing citations and legal entities
+        """
         # Initialize result structure
         result = {
             'citations': [],
@@ -257,7 +310,15 @@ class EnhancedVectorProcessor:
 
 
     def clean_text(self, content: str) -> str:
-        """Strips HTML/XML tags and normalizes whitespace."""
+        """
+        Strip HTML/XML tags and normalize whitespace.
+
+        Args:
+            content: Raw text content that may contain HTML/XML
+
+        Returns:
+            Cleaned text with normalized whitespace
+        """
         if not content:
             return ''
         soup = BeautifulSoup(content, "html.parser")
@@ -266,7 +327,15 @@ class EnhancedVectorProcessor:
 
 
     def enhanced_text_processing(self, text: str) -> Dict[str, Any]:
-        """Enhanced processing that extracts citations and legal entities."""
+        """
+        Enhanced processing that extracts citations and legal entities.
+
+        Args:
+            text: Raw text to process
+
+        Returns:
+            Dictionary containing cleaned text, citations, entities, and statistics
+        """
         if not text:
             return {
                 'cleaned_text': '',
@@ -290,17 +359,17 @@ class EnhancedVectorProcessor:
         }
 
 
-    def process_and_upload_chunks(self, chunks: List[Dict[str, Any]], 
+    def process_and_upload_chunks(self, chunks: List[Dict[str, Any]],
                                 collection_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Process and upload chunks for a single docket to Qdrant.
-        
+
         Args:
             chunks: List of chunks to process and upload
             collection_name: Optional collection name (uses self.collection_name if not provided)
-            
+
         Returns:
-            Dict with processing results
+            Dictionary with processing results including status and vectors created
         """
         if not chunks:
             return {'status': 'no_chunks', 'vectors_created': 0}
@@ -408,27 +477,30 @@ class EnhancedVectorProcessor:
             }
     
     
-    def semantic_search(self, query: str, collection_name: str = None, 
-                       limit: int = 10, score_threshold: float = None) -> List[Dict[str, Any]]:
+    def semantic_search(self, query: str, collection_name: Optional[str] = None,
+                       limit: int = 10, score_threshold: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Perform semantic vector search using dense embeddings only.
-        
+
         Args:
             query: Search query text
             collection_name: Name of the collection (uses self.collection_name if not provided)
             limit: Number of results to return
             score_threshold: Minimum score threshold for results
-            
+
         Returns:
             List of search results with scores and metadata
+
+        Raises:
+            ValueError: If collection does not exist
         """
         collection = collection_name or self.collection_name
         
         if not self.client.collection_exists(collection):
             raise ValueError(f"Collection '{collection}' does not exist.")
         
-        logger.info(f"🔍 Performing semantic search on '{collection}'")
-        logger.info(f"📊 Query: {query}")
+        logger.info(f"Performing semantic search on '{collection}'")
+        logger.info(f"Query: {query}")
         
         # Create enhanced query with BGE prefix if applicable
         enhanced_query = self.query_prefix + query if self.query_prefix else query
@@ -458,34 +530,37 @@ class EnhancedVectorProcessor:
                 }
                 results.append(result)
             
-            logger.info(f"✅ Semantic search completed: {len(results)} results")
+            logger.info(f"Semantic search completed: {len(results)} results")
             return results
             
         except Exception as e:
-            logger.error(f"❌ Semantic search failed: {e}")
+            logger.error(f"Semantic search failed: {e}")
             raise
     
-    def hybrid_search(self, query: str, collection_name: str = None, 
-                     limit: int = 10, score_threshold: float = None) -> List[Dict[str, Any]]:
+    def hybrid_search(self, query: str, collection_name: Optional[str] = None,
+                     limit: int = 10, score_threshold: Optional[float] = None) -> List[Dict[str, Any]]:
         """
         Perform hybrid search using Reciprocal Rank Fusion (RRF) combining dense and sparse vectors.
-        
+
         Args:
             query: Search query text
             collection_name: Name of the collection (uses self.collection_name if not provided)
             limit: Number of results to return
             score_threshold: Minimum score threshold for results
-            
+
         Returns:
             List of search results with scores and metadata
+
+        Raises:
+            ValueError: If collection does not exist
         """
         collection = collection_name or self.collection_name
         
         if not self.client.collection_exists(collection):
             raise ValueError(f"Collection '{collection}' does not exist.")
         
-        logger.info(f"🔍 Performing hybrid search on '{collection}'")
-        logger.info(f"📊 Query: {query}")
+        logger.info(f"Performing hybrid search on '{collection}'")
+        logger.info(f"Query: {query}")
         
         # Create enhanced query with BGE prefix if applicable
         enhanced_query = self.query_prefix + query if self.query_prefix else query
@@ -533,11 +608,11 @@ class EnhancedVectorProcessor:
                 }
                 results.append(result)
             
-            logger.info(f"✅ Hybrid search completed: {len(results)} results")
+            logger.info(f"Hybrid search completed: {len(results)} results")
             return results
             
         except Exception as e:
-            logger.error(f"❌ Hybrid search failed: {e}")
+            logger.error(f"Hybrid search failed: {e}")
             raise
     
     def process_documents_from_file(self, chunks_file: str, 

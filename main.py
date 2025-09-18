@@ -9,33 +9,28 @@ This module orchestrates the complete pipeline:
 
 Provides a single entry point for the entire processing workflow.
 """
-from typing import Dict, Any, List
-from pathlib import Path
-from datetime import datetime
-import logging
+
+# Standard library imports
 import argparse
 import json
-import requests
+import logging
 import os
+import re
 import time
 import urllib.parse
-from typing import Optional
-from dotenv import load_dotenv
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# Import processing modules
-from config import PipelineConfig, load_config
+# Third-party imports
+import requests
+from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# Local imports
+from config import PipelineConfig, load_config
 
-# Handle vector processor import gracefully
-try:
-    from vector_processor import EnhancedVectorProcessor
-    VECTOR_PROCESSOR_AVAILABLE = True
-except ImportError as e:
-    print(f"Warning: Vector processing not available ({e}). Only chunking will work.")
-    EnhancedVectorProcessor = None
-    VECTOR_PROCESSOR_AVAILABLE = False
-
+# Configure logging first
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -43,51 +38,179 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30, 
-                    max_retries: int = 3, delay: int = 5) -> Optional[Dict[str, Any]]:
+def sanitize_url_for_logging(url: str) -> str:
+    """Sanitize URLs to remove sensitive parameters before logging."""
+    # Remove common sensitive parameters
+    sensitive_params = ['api_key', 'token', 'key', 'password', 'secret']
+    parsed = urllib.parse.urlparse(url)
+
+    if parsed.query:
+        params = urllib.parse.parse_qs(parsed.query)
+        sanitized_params = {}
+
+        for key, values in params.items():
+            if any(sensitive_key in key.lower() for sensitive_key in sensitive_params):
+                sanitized_params[key] = ['***REDACTED***']
+            else:
+                sanitized_params[key] = values
+
+        sanitized_query = urllib.parse.urlencode(sanitized_params, doseq=True)
+        sanitized_url = urllib.parse.urlunparse((
+            parsed.scheme, parsed.netloc, parsed.path,
+            parsed.params, sanitized_query, parsed.fragment
+        ))
+        return sanitized_url
+
+    return url
+
+
+def sanitize_exception_message(message: str) -> str:
+    """Sanitize exception messages to remove potential API keys."""
+    # Pattern to match common API key formats
+    patterns = [
+        r'(api[_-]?key[=:]\s*)([a-zA-Z0-9\-_]{6,})',  # Reduced minimum length
+        r'(token[=:]\s*)([a-zA-Z0-9\-_]{6,})',          # Reduced minimum length
+        r'(authorization[=:]\s*token\s+)([a-zA-Z0-9\-_]+)',
+        r'(token\s+)([a-zA-Z0-9\-_]{6,})',              # Added pattern for "token abc123"
+    ]
+
+    sanitized = str(message)
+    for pattern in patterns:
+        sanitized = re.sub(pattern, r'\1***REDACTED***', sanitized, flags=re.IGNORECASE)
+
+    return sanitized
+
+
+class CircuitBreaker:
+    """Simple circuit breaker implementation for API calls."""
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 60):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+
+    def call(self, func, *args, **kwargs):
+        """Execute function with circuit breaker protection."""
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                logger.info("Circuit breaker state: HALF_OPEN - attempting recovery")
+            else:
+                raise Exception("Circuit breaker is OPEN - API calls blocked")
+
+        try:
+            result = func(*args, **kwargs)
+            self._on_success()
+            return result
+        except Exception as e:
+            self._on_failure()
+            raise
+
+    def _on_success(self):
+        """Reset circuit breaker on successful call."""
+        self.failure_count = 0
+        if self.state == "HALF_OPEN":
+            self.state = "CLOSED"
+            logger.info("Circuit breaker state: CLOSED - recovery successful")
+
+    def _on_failure(self):
+        """Track failure and potentially open circuit."""
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+            logger.warning(f"Circuit breaker state: OPEN - {self.failure_count} failures detected")
+
+    def is_open(self) -> bool:
+        """Check if circuit breaker is open."""
+        return self.state == "OPEN"
+
+# Handle vector processor import gracefully
+try:
+    from vector_processor import EnhancedVectorProcessor
+    VECTOR_PROCESSOR_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Vector processing not available ({e}). Only chunking will work.")
+    EnhancedVectorProcessor = None
+    VECTOR_PROCESSOR_AVAILABLE = False
+
+# Global circuit breaker for API calls
+api_circuit_breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=60)
+
+
+def fetch_with_retry(url: str, headers: Dict[str, str] = None, timeout: int = 30,
+                    max_retries: int = 3, delay: int = 5, circuit_breaker: CircuitBreaker = None) -> Optional[Dict[str, Any]]:
     """
-    Fetch data from URL with retry logic for 5xx server errors.
-    
+    Fetch data from URL with retry logic for 5xx server errors and 429 rate limiting.
+
     Args:
         url: URL to fetch
         headers: HTTP headers to send
         timeout: Request timeout in seconds
         max_retries: Maximum number of retry attempts
         delay: Seconds to wait between retries
-        
+        circuit_breaker: Optional circuit breaker for protection
+
     Returns:
         JSON response data or None if all retries failed
     """
+    def _make_request():
+        return requests.get(url, headers=headers or {}, timeout=timeout)
+
     for attempt in range(max_retries + 1):  # +1 for initial attempt
         try:
-            response = requests.get(url, headers=headers or {}, timeout=timeout)
+            # Use circuit breaker if provided
+            if circuit_breaker:
+                response = circuit_breaker.call(_make_request)
+            else:
+                response = _make_request()
             
             # Success - return the data
             if response.status_code == 200:
                 return response.json()
-            
-            # Client errors (4xx) - don't retry, content doesn't exist
+
+            # Rate limit (429) - respect Retry-After header
+            elif response.status_code == 429:
+                retry_after = int(response.headers.get('Retry-After', 60))
+                safe_url = sanitize_url_for_logging(url)
+                logger.warning(f"Rate limited (429) for {safe_url} - waiting {retry_after}s before retry (attempt {attempt + 1}/{max_retries})")
+
+                if attempt < max_retries:
+                    time.sleep(retry_after)
+                    continue
+                else:
+                    logger.error(f"Rate limited for {safe_url} - max retries exceeded")
+                    return None
+
+            # Other client errors (4xx) - don't retry, content doesn't exist
             elif 400 <= response.status_code < 500:
-                logger.warning(f"Client error {response.status_code} for {url} - not retrying")
+                safe_url = sanitize_url_for_logging(url)
+                logger.warning(f"Client error {response.status_code} for {safe_url} - not retrying")
                 return None
-            
+
             # Server errors (5xx) - retry with delay
             elif response.status_code >= 500:
+                safe_url = sanitize_url_for_logging(url)
                 if attempt < max_retries:
-                    logger.warning(f"Server error {response.status_code} for {url} - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"Server error {response.status_code} for {safe_url} - retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(delay)
                     continue
                 else:
-                    logger.error(f"Server error {response.status_code} for {url} - max retries exceeded")
+                    logger.error(f"Server error {response.status_code} for {safe_url} - max retries exceeded")
                     return None
-                    
+
         except requests.exceptions.RequestException as e:
+            safe_url = sanitize_url_for_logging(url)
+            safe_error = sanitize_exception_message(str(e))
             if attempt < max_retries:
-                logger.warning(f"Request exception for {url}: {e} - retrying in {delay}s")
+                logger.warning(f"Request exception for {safe_url}: {safe_error} - retrying in {delay}s")
                 time.sleep(delay)
                 continue
             else:
-                logger.error(f"Request failed for {url} after {max_retries} retries: {e}")
+                logger.error(f"Request failed for {safe_url} after {max_retries} retries: {safe_error}")
                 return None
     
     return None
@@ -113,21 +236,27 @@ class LegalDocumentPipeline:
 
 
     def get_pipeline_status(self) -> Dict[str, Any]:
-        """Get current pipeline status and available data."""
-        status = {
+        """Get current pipeline status and available data.
+
+        Returns:
+            Dict containing working directory, files, and configuration summary
+        """
+        return {
             'working_dir': str(self.working_dir),
             'files': [str(f) for f in self.working_dir.glob("*")],
             'configuration': self.config.get_summary()
         }
-        return status
 
 
     def run_pipeline(self) -> Dict[str, Any]:
         """
         Run the legal document processing pipeline.
-        Fetch existing dockets to prevent duplication.
-        Process new dockets only.
-        Includes smart pagination for efficient API calls.
+
+        Fetches existing dockets to prevent duplication, processes new dockets only,
+        and includes smart pagination for efficient API calls.
+
+        Returns:
+            Dict containing pipeline execution results and statistics
         """
         logger.info(f"🚀 Starting legal document processing pipeline")
         logger.info(f"🏛️ Court: {self.config.data_ingestion.court}, Dockets: {self.config.data_ingestion.num_dockets}")
@@ -166,11 +295,8 @@ class LegalDocumentPipeline:
             existing_dockets = vector_processor.get_existing_docket_ids()
             logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
 
-        # This will improve pagination
-        if len(existing_dockets) == 0:
-            qdrant_id = 1
-        else:
-            qdrant_id = len(existing_dockets) + 1
+        # Set starting ID for new documents
+        qdrant_id = len(existing_dockets) + 1
 
         # Stats tracking
         stats = {
@@ -188,10 +314,9 @@ class LegalDocumentPipeline:
             # Step 1: Smart pagination that fetches NEW dockets directly (deduplication built-in)
             logger.info(f"📋 Smart fetching dockets with built-in deduplication...")
             new_dockets = self._fetch_all_dockets_paginated(
-                self.config.data_ingestion.court, 
+                self.config.data_ingestion.court,
                 self.config.data_ingestion.num_dockets,
-                existing_dockets,
-                qdrant_id
+                existing_dockets
             )
 
             stats['dockets_fetched'] = len(new_dockets)
@@ -227,7 +352,7 @@ class LegalDocumentPipeline:
                     
                     # Chunk documents
                     all_chunks = []
-                    for _, op in enumerate(docket_opinions):
+                    for op in docket_opinions:
                         opinion_text = op.get('opinion_text', '')
                         if not opinion_text or len(opinion_text.strip()) < 50:
                             continue
@@ -289,14 +414,13 @@ class LegalDocumentPipeline:
                                 stats['errors'].append({'docket': docket_id, 'error': str(e)})
                     
                     stats['dockets_processed'] += 1
-                    logger.info(f"✅ Docket {docket_id}: {len(docket.get('clusters', []))} clusters, {len(docket_opinions)} opinions, {len(all_chunks)} chunks")
-                
+                    logger.info(f"✅ Docket {docket_id}: {len(docket_opinions)} opinions, {len(all_chunks)} chunks")
 
                 except Exception as e:
                     logger.error(f"❌ Error processing docket {docket_id}: {e}")
                     stats['errors'].append({'docket': docket_id, 'error': str(e)})
 
-                qdrant_id += 1  # Increment for next docket
+                qdrant_id += 1
             
             # Final summary
             duration = (datetime.now() - start_time).total_seconds()
@@ -336,15 +460,24 @@ class LegalDocumentPipeline:
             raise
 
 
-    def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set, qdrant_id: int = 1) -> List[Dict[str, Any]]:
+    def _fetch_all_dockets_paginated(self, court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
         """
-        Fetch dockets using cursor-based pagination starting from newest first.
-        Uses qdrant_id to calculate the starting page position efficiently.
+        Fetch dockets using cursor-based pagination starting from oldest first.
+
+        This ensures consistent ordering and prevents pagination issues with new dockets.
+
+        Args:
+            court: Court identifier (e.g., 'scotus')
+            num_dockets: Number of new dockets to fetch
+            existing_dockets: Set of existing docket IDs to avoid duplicates
+
+        Returns:
+            List of new docket dictionaries
         """
-        
+
         load_dotenv()
-        CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
-        HEADERS = {'Authorization': f'Token {CASELAW_API_KEY}'} if CASELAW_API_KEY else {}
+        api_key = os.getenv('CASELAW_API_KEY')
+        headers = {'Authorization': f'Token {api_key}'} if api_key else {}
         
         new_dockets = []
         page_count = 0
@@ -352,21 +485,13 @@ class LegalDocumentPipeline:
         consecutive_empty_pages = 0
         max_consecutive_empty = 50
         
-        # Calculate starting page based on qdrant_id
-        # If qdrant_id is 101, we want to skip the first 100 dockets
-        skip_count = max(0, qdrant_id - 1)
-        target_start_page = (skip_count // page_size) + 1
-        
-        logger.info(f"🌐 Cursor-based pagination: fetching {num_dockets} NEW dockets (newest first)...")
+        logger.info(f"🌐 Fetching {num_dockets} new dockets from {court}")
         logger.info(f"🔍 Found {len(existing_dockets)} existing dockets in collection")
-        logger.info(f"📊 Starting from qdrant_id {qdrant_id}, will skip {skip_count} dockets")
-        logger.info(f"📄 Target starting page: {target_start_page}")
-        
+
         base_url = "https://www.courtlistener.com/api/rest/v4/dockets/"
-        
-        # Start with cursor-based pagination to access newer dockets first
+
+        # Start with cursor-based pagination from the beginning (oldest first)
         cursor = None
-        current_position = 0  # Track how many dockets we've seen total
         
         while len(new_dockets) < num_dockets:
             page_count += 1
@@ -376,7 +501,7 @@ class LegalDocumentPipeline:
             try:
                 params = {
                     "court": court,
-                    "ordering": "-id"  # Newest dockets first
+                    "ordering": "id"  # Oldest dockets first for consistent pagination
                 }
                 if cursor:
                     params["cursor"] = cursor
@@ -387,10 +512,11 @@ class LegalDocumentPipeline:
                 
                 response_data = fetch_with_retry(
                     url=full_url,
-                    headers=HEADERS,
+                    headers=headers,
                     timeout=30,
                     max_retries=3,
-                    delay=5
+                    delay=5,
+                    circuit_breaker=api_circuit_breaker
                 )
                 
                 if response_data is None:
@@ -410,25 +536,19 @@ class LegalDocumentPipeline:
                 else:
                     cursor = None
                 
-                # Check this page for new dockets, considering our starting position
+                # Check this page for new dockets
                 page_new_count = 0
                 for docket in page_dockets:
-                    current_position += 1
-                    
-                    # Skip dockets until we reach our target starting position
-                    if current_position < qdrant_id:
-                        continue
-                        
                     docket_id = docket.get('id', '')
                     if docket_id and docket_id not in existing_dockets:
                         new_dockets.append(docket)
                         page_new_count += 1
-                        
+
                         # Stop if we have enough new dockets
                         if len(new_dockets) >= num_dockets:
                             break
-                
-                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (position: {current_position}, total new: {len(new_dockets)})")
+
+                logger.info(f"📊 Page {page_count}: {len(page_dockets)} total, {page_new_count} new (total new: {len(new_dockets)})")
                 
                 # Track consecutive empty pages
                 if page_new_count == 0:
@@ -460,6 +580,7 @@ class LegalDocumentPipeline:
         logger.info(f"🎯 Cursor-based pagination complete:")
         logger.info(f"   📄 Pages fetched: {page_count}")
         logger.info(f"   ✨ New dockets found: {len(final_new_dockets)}")
+        logger.info(f"   📊 Ordering: oldest first (id) for consistent deduplication")
         
         return final_new_dockets
 
@@ -467,8 +588,15 @@ class LegalDocumentPipeline:
     def _fix_chunk_overlaps(self, chunks: List[str]) -> List[str]:
         """
         Fix chunk overlaps to ensure they start and end at proper sentence boundaries.
+
         This addresses the issue where RecursiveCharacterTextSplitter's character-based
         overlap creates fragments like 'Moreover, the plaintiffs' contention...'
+
+        Args:
+            chunks: List of text chunks to fix
+
+        Returns:
+            List of cleaned chunks with proper sentence boundaries
         """
         if not chunks:
             return chunks
@@ -494,7 +622,15 @@ class LegalDocumentPipeline:
     
 
     def _fix_chunk_start(self, chunk: str) -> str:
-        """Fix the start of a chunk to begin at a proper sentence boundary."""
+        """
+        Fix the start of a chunk to begin at a proper sentence boundary.
+
+        Args:
+            chunk: Text chunk to fix
+
+        Returns:
+            Fixed chunk starting at a sentence boundary
+        """
         if not chunk:
             return chunk
             
@@ -502,9 +638,6 @@ class LegalDocumentPipeline:
         if self._starts_at_sentence_boundary(chunk):
             return chunk
             
-        # Find the first proper sentence start
-        import re
-        
         # Look for sentence patterns: '. [A-Z]', '? [A-Z]', '! [A-Z]', or start of paragraph
         patterns = [
             r'[.!?]\s+[A-Z]',  # Sentence ending + capital letter
@@ -524,7 +657,15 @@ class LegalDocumentPipeline:
     
 
     def _fix_chunk_end(self, chunk: str) -> str:
-        """Fix the end of a chunk to end at a complete sentence."""
+        """
+        Fix the end of a chunk to end at a complete sentence.
+
+        Args:
+            chunk: Text chunk to fix
+
+        Returns:
+            Fixed chunk ending at a complete sentence
+        """
         if not chunk:
             return chunk
             
@@ -533,9 +674,6 @@ class LegalDocumentPipeline:
         # If already ends at sentence boundary, keep it
         if chunk.endswith(('.', '!', '?')):
             return chunk
-        
-        # Find the last complete sentence
-        import re
         
         # Look for the last sentence-ending punctuation
         sentence_endings = list(re.finditer(r'[.!?]', chunk))
@@ -556,7 +694,15 @@ class LegalDocumentPipeline:
     
 
     def _starts_at_sentence_boundary(self, text: str) -> bool:
-        """Check if text starts at a natural sentence boundary."""
+        """
+        Check if text starts at a natural sentence boundary.
+
+        Args:
+            text: Text to check
+
+        Returns:
+            True if text starts at a good sentence boundary
+        """
         if not text:
             return False
             
@@ -578,12 +724,22 @@ class LegalDocumentPipeline:
         return False
     
 
-    def _fetch_docket_clusters_and_opinions(self, docket: Dict[str, Any], court: str, vector_processor=None) -> List[Dict[str, Any]]:
-        """Fetch and process all clusters and opinions for a specific docket object."""
+    def _fetch_docket_clusters_and_opinions(self, docket: Dict[str, Any], court: str, vector_processor=None) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Fetch and process all clusters and opinions for a specific docket object.
+
+        Args:
+            docket: Docket dictionary from API
+            court: Court identifier
+            vector_processor: Optional vector processor for text enhancement
+
+        Returns:
+            Tuple of (clusters, opinions) lists
+        """
 
         load_dotenv()
-        CASELAW_API_KEY = os.getenv('CASELAW_API_KEY')
-        HEADERS = {'Authorization': f'Token {CASELAW_API_KEY}'} if CASELAW_API_KEY else {}
+        api_key = os.getenv('CASELAW_API_KEY')
+        headers = {'Authorization': f'Token {api_key}'} if api_key else {}
         
         opinions = []
         clusters = []
@@ -596,11 +752,12 @@ class LegalDocumentPipeline:
             try:
                 logger.debug(f"Processing cluster: {cluster_url}")
                 cluster = fetch_with_retry(
-                    url=cluster_url, 
-                    headers=HEADERS, 
+                    url=cluster_url,
+                    headers=headers,
                     timeout=30,
                     max_retries=3,
-                    delay=5
+                    delay=5,
+                    circuit_breaker=api_circuit_breaker
                 )
                 if cluster is None:
                     logger.warning(f"Failed to fetch cluster {cluster_url} after retries")
@@ -612,11 +769,12 @@ class LegalDocumentPipeline:
                     try:
                         logger.debug(f"Processing opinion: {opinion_url}")
                         opinion = fetch_with_retry(
-                            url=opinion_url, 
-                            headers=HEADERS, 
+                            url=opinion_url,
+                            headers=headers,
                             timeout=30,
                             max_retries=3,
-                            delay=5
+                            delay=5,
+                            circuit_breaker=api_circuit_breaker
                         )
                         if opinion is None:
                             logger.warning(f"Failed to fetch opinion {opinion_url} after retries")
@@ -687,7 +845,12 @@ class LegalDocumentPipeline:
         logger.info(f"📄 Found {len(opinions)} opinions and {len(clusters)} clusters in docket {docket_id}")
         return clusters, opinions
 
-def main():
+def main() -> None:
+    """
+    Main entry point for the legal document processing pipeline.
+
+    Parses command line arguments, loads configuration, and runs the pipeline.
+    """
     parser = argparse.ArgumentParser(
         description="Unified Legal Document Processing Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -714,7 +877,26 @@ def main():
 
     if args.status:
         status = pipeline.get_pipeline_status()
-        print(json.dumps(status, indent=2))
+
+        # Add configuration diagnostics to status output
+        try:
+            from config import validate_configuration_sources, print_configuration_guidance
+
+            print("="*60)
+            print("📊 PIPELINE STATUS")
+            print("="*60)
+            print(json.dumps(status, indent=2))
+
+            print("\n" + "="*60)
+            print("🔧 CONFIGURATION DIAGNOSTICS")
+            print("="*60)
+
+            # Run configuration validation and print guidance
+            print_configuration_guidance()
+
+        except ImportError:
+            print("Configuration diagnostics not available")
+            print(json.dumps(status, indent=2))
         return
 
     # Run pipeline

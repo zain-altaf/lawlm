@@ -1,5 +1,8 @@
 # Python
-__pycache__/*
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 
 # Virtual environments
 venv/
@@ -10,7 +13,7 @@ ENV/
 # IDE
 .vscode/
 .idea/
-.claude/
+.claude/*
 *.swp
 *.swo
 *~
@@ -37,6 +40,20 @@ logs/
 # Testing
 .pytest_cache/*
 
+# Airflow runtime files
+*.db
+*.pid
+*.err
+*.out
+airflow-*.log
+airflow-*.out
+airflow-*.err
+airflow/logs/*
+airflow/dags/data/*
+airflow/__pycache__/
+airflow/dags/__pycache__/
+airflow/hooks/__pycache__/
+
 CLAUDE.md
 
-test/*
+context/*
