@@ -23,7 +23,7 @@ import sys
 import time
 import traceback
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 # Third-party imports
 from airflow.decorators import dag, task
@@ -47,6 +47,9 @@ CALL_LIMIT_PER_HOUR = 5000
 TARGET_CALLS_PER_HOUR = 4900
 SAFETY_BUFFER = int(os.getenv('COURTLISTENER_SAFETY_BUFFER', '25'))
 MIN_CALLS_PER_DOCKET = int(os.getenv('COURTLISTENER_MIN_CALLS_PER_DOCKET', '25'))
+MAX_VECTOR_PROCESSOR_POOL_SIZE = int(os.getenv('MAX_VECTOR_PROCESSOR_POOL_SIZE', '3'))
+REDIS_COUNTER_TTL_HOURS = int(os.getenv('REDIS_COUNTER_TTL_HOURS', '2'))
+REDIS_STATE_TTL_HOURS = int(os.getenv('REDIS_STATE_TTL_HOURS', '25'))
 REDIS_CONN_ID = "redis_default"
 METASTORE_CONN_ID = "postgres_default"
 API_POOL_NAME = "courtlistener_api_pool"
@@ -74,7 +77,7 @@ default_args = {
     tags=['legal', 'etl', 'vector_search', 'redis', 'enhanced'],
     description='Enhanced CourtListener pipeline with Redis-based rate limiting and state management'
 )
-def courtlistener_pipeline_dag():
+def courtlistener_pipeline_dag() -> Any:
     """
     Enhanced Airflow DAG with Redis-based caching for robust API rate limiting
     and persistent state management across pipeline executions.
@@ -85,45 +88,167 @@ def courtlistener_pipeline_dag():
     from main import LegalDocumentPipeline
 
     class VectorProcessorPool:
-        """Singleton pattern for vector processor with connection pooling and resource management."""
+        """Connection pool for vector processors with configurable size limits."""
         _instance = None
-        _processor = None
-        _embedding_model = None
+        _processors = {}  # Dict to store multiple processors by key
+        _usage_count = {}  # Track usage for LRU eviction
+        _access_order = []  # Track access order for LRU
 
         def __new__(cls):
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
+                cls._instance._processors = {}
+                cls._instance._usage_count = {}
+                cls._instance._access_order = []
             return cls._instance
 
+        def _get_processor_key(self, model_name: str, collection_name: str) -> str:
+            """Generate a unique key for processor identification."""
+            return f"{model_name}:{collection_name}"
+
         def get_processor(self, model_name: str, collection_name: str) -> EnhancedVectorProcessor:
-            """Get or create a shared vector processor instance."""
-            if (self._processor is None or
-                self._embedding_model != model_name or
-                self._processor.collection_name != collection_name):
+            """Get or create a vector processor instance with pool size limits."""
+            processor_key = self._get_processor_key(model_name, collection_name)
 
-                task_logger.info(f"Creating new VectorProcessor for model: {model_name}, collection: {collection_name}")
+            # Check if processor already exists
+            if processor_key in self._processors:
+                self._update_access_order(processor_key)
+                task_logger.debug(f"Reusing existing VectorProcessor for {processor_key}")
+                return self._processors[processor_key]
 
-                if self._processor is not None:
-                    self.cleanup()
+            # Check pool size limit
+            if len(self._processors) >= MAX_VECTOR_PROCESSOR_POOL_SIZE:
+                self._evict_least_recently_used()
 
-                self._processor = EnhancedVectorProcessor(
-                    model_name=model_name,
-                    collection_name=collection_name
-                )
-                self._embedding_model = model_name
+            # Create new processor
+            task_logger.info(f"Creating new VectorProcessor for model: {model_name}, collection: {collection_name}")
+            processor = EnhancedVectorProcessor(
+                model_name=model_name,
+                collection_name=collection_name
+            )
 
-            return self._processor
+            # Add to pool
+            self._processors[processor_key] = processor
+            self._usage_count[processor_key] = 1
+            self._update_access_order(processor_key)
 
-        def cleanup(self):
-            """Cleanup resources when done."""
-            if self._processor:
-                task_logger.info("Cleaning up vector processor resources")
-                self._processor = None
-                self._embedding_model = None
+            task_logger.info(f"VectorProcessor pool size: {len(self._processors)}/{MAX_VECTOR_PROCESSOR_POOL_SIZE}")
+            return processor
+
+        def _update_access_order(self, processor_key: str) -> None:
+            """Update access order for LRU tracking."""
+            if processor_key in self._access_order:
+                self._access_order.remove(processor_key)
+            self._access_order.append(processor_key)
+            self._usage_count[processor_key] = self._usage_count.get(processor_key, 0) + 1
+
+        def _evict_least_recently_used(self) -> None:
+            """Remove the least recently used processor to make room for new one."""
+            if not self._access_order:
+                return
+
+            lru_key = self._access_order[0]
+            task_logger.info(f"Evicting LRU VectorProcessor: {lru_key} (used {self._usage_count[lru_key]} times)")
+
+            # Remove from all tracking structures
+            del self._processors[lru_key]
+            del self._usage_count[lru_key]
+            self._access_order.remove(lru_key)
+
+        def get_pool_stats(self) -> Dict[str, Any]:
+            """Get current pool statistics."""
+            return {
+                'current_size': len(self._processors),
+                'max_size': MAX_VECTOR_PROCESSOR_POOL_SIZE,
+                'processors': list(self._processors.keys()),
+                'usage_counts': dict(self._usage_count)
+            }
+
+        def cleanup_all(self) -> None:
+            """Cleanup all processors in the pool."""
+            task_logger.info(f"Cleaning up {len(self._processors)} vector processors")
+            self._processors.clear()
+            self._usage_count.clear()
+            self._access_order.clear()
 
     vector_processor_pool = VectorProcessorPool()
 
-    def classify_and_handle_error(error: Exception, context: str, docket_id: int = None) -> None:
+    def validate_dag_configuration() -> bool:
+        """
+        Validate DAG configuration and environment variables at initialization.
+
+        Returns:
+            bool: True if configuration is valid, False otherwise
+        """
+        validation_errors = []
+
+        # Validate required environment variables
+        required_env_vars = {
+            'CASELAW_API_KEY': 'CourtListener API key for data ingestion',
+            'QDRANT_URL': 'Qdrant database URL for vector storage'
+        }
+
+        for env_var, description in required_env_vars.items():
+            if not os.getenv(env_var):
+                validation_errors.append(f"Missing required environment variable: {env_var} ({description})")
+
+        # Validate numeric configuration values
+        numeric_configs = {
+            'CALL_LIMIT_PER_HOUR': CALL_LIMIT_PER_HOUR,
+            'TARGET_CALLS_PER_HOUR': TARGET_CALLS_PER_HOUR,
+            'SAFETY_BUFFER': SAFETY_BUFFER,
+            'MIN_CALLS_PER_DOCKET': MIN_CALLS_PER_DOCKET,
+            'MAX_VECTOR_PROCESSOR_POOL_SIZE': MAX_VECTOR_PROCESSOR_POOL_SIZE,
+            'REDIS_COUNTER_TTL_HOURS': REDIS_COUNTER_TTL_HOURS,
+            'REDIS_STATE_TTL_HOURS': REDIS_STATE_TTL_HOURS
+        }
+
+        for config_name, config_value in numeric_configs.items():
+            if not isinstance(config_value, int) or config_value <= 0:
+                validation_errors.append(f"Invalid {config_name}: {config_value} (must be positive integer)")
+
+        # Validate logical relationships
+        if TARGET_CALLS_PER_HOUR >= CALL_LIMIT_PER_HOUR:
+            validation_errors.append(f"TARGET_CALLS_PER_HOUR ({TARGET_CALLS_PER_HOUR}) must be less than CALL_LIMIT_PER_HOUR ({CALL_LIMIT_PER_HOUR})")
+
+        if SAFETY_BUFFER >= CALL_LIMIT_PER_HOUR:
+            validation_errors.append(f"SAFETY_BUFFER ({SAFETY_BUFFER}) must be less than CALL_LIMIT_PER_HOUR ({CALL_LIMIT_PER_HOUR})")
+
+        if MIN_CALLS_PER_DOCKET > TARGET_CALLS_PER_HOUR:
+            validation_errors.append(f"MIN_CALLS_PER_DOCKET ({MIN_CALLS_PER_DOCKET}) should not exceed TARGET_CALLS_PER_HOUR ({TARGET_CALLS_PER_HOUR})")
+
+        # Validate Redis connection configuration
+        try:
+            from airflow.models import Variable
+            redis_host = Variable.get("redis_host", default_var="localhost")
+            redis_port = Variable.get("redis_port", default_var=6379)
+            if not isinstance(redis_port, int) or redis_port <= 0 or redis_port > 65535:
+                validation_errors.append(f"Invalid Redis port: {redis_port} (must be 1-65535)")
+        except Exception as e:
+            validation_errors.append(f"Error accessing Airflow Variables: {e}")
+
+        # Validate Airflow pool configuration
+        if SAFE_CONCURRENCY_LIMIT <= 0:
+            validation_errors.append(f"SAFE_CONCURRENCY_LIMIT ({SAFE_CONCURRENCY_LIMIT}) must be positive")
+
+        # Log results
+        if validation_errors:
+            task_logger.error(f"❌ DAG Configuration validation failed:")
+            for i, error in enumerate(validation_errors, 1):
+                task_logger.error(f"  {i}. {error}")
+            return False
+        else:
+            task_logger.info("✅ DAG Configuration validation passed")
+            task_logger.info(f"  - API Rate Limit: {TARGET_CALLS_PER_HOUR}/{CALL_LIMIT_PER_HOUR} calls/hour")
+            task_logger.info(f"  - Safety Buffer: {SAFETY_BUFFER} calls")
+            task_logger.info(f"  - Vector Pool Size: {MAX_VECTOR_PROCESSOR_POOL_SIZE}")
+            task_logger.info(f"  - Redis TTL: Counter={REDIS_COUNTER_TTL_HOURS}h, State={REDIS_STATE_TTL_HOURS}h")
+            return True
+
+    # Validate configuration at DAG initialization
+    config_valid = validate_dag_configuration()
+
+    def classify_and_handle_error(error: Exception, context: str, docket_id: Optional[int] = None) -> None:
         """
         Enhanced error classification with Redis state awareness.
 
@@ -186,7 +311,7 @@ def courtlistener_pipeline_dag():
             task_logger.error(f"Full traceback: {traceback.format_exc()}")
             raise AirflowFailException(f"Unknown error in {context} (docket {docket_id}): {error}")
 
-    def make_api_call_with_backoff(url: str, headers: Dict[str, str], description: str, max_retries: int = 3):
+    def make_api_call_with_backoff(url: str, headers: Dict[str, str], description: str, max_retries: int = 3) -> Any:
         """
         Enhanced API call with Redis rate limit awareness.
 
@@ -245,8 +370,34 @@ def courtlistener_pipeline_dag():
     @task
     def initialize_redis_pipeline_state() -> Dict[str, Any]:
         """
-        Initialize Redis-based pipeline state with empty API call counter and start time caching.
-        This task runs immediately when the DAG starts and sets up the distributed state.
+        Initialize Redis-based pipeline state for the DAG run.
+
+        This task sets up the distributed state management system using Redis for
+        tracking API calls, pipeline progress, and ensuring rate limit compliance
+        across multiple worker nodes.
+
+        Inputs:
+            - DAG context (automatically provided by Airflow)
+            - Redis connection configuration
+
+        Outputs:
+            dict: Pipeline state containing:
+                - 'dag_run_id': Unique identifier for this DAG run
+                - 'start_time': Pipeline initialization timestamp
+                - 'current_hour': Current hour key for rate limiting
+                - 'api_calls_this_hour': Current API call count
+                - 'status': Pipeline status ('initialized')
+                - 'redis_keys': Dictionary of Redis keys used for state management
+
+        Side Effects:
+            - Creates Redis keys for state tracking with configured TTL
+            - Initializes API call counter for the current hour
+            - Caches task start time for monitoring
+
+        Error Handling:
+            - Falls back to in-memory state if Redis is unavailable
+            - Logs detailed error information for debugging
+            - Continues pipeline execution with degraded functionality
         """
         try:
             from airflow.operators.python import get_current_context
@@ -260,7 +411,7 @@ def courtlistener_pipeline_dag():
             start_time = redis_hook.cache_task_start_time(dag_run_id, "pipeline_start")
 
             # Initialize pipeline state with empty counter
-            state = redis_hook.initialize_pipeline_state(dag_run_id)
+            state = redis_hook.initialize_pipeline_state(dag_run_id, REDIS_STATE_TTL_HOURS)
 
             # Get current rate limit status
             rate_status = redis_hook.get_current_rate_limit_status()
@@ -319,8 +470,42 @@ def courtlistener_pipeline_dag():
     @task
     def check_redis_rate_limit_and_hour_boundary() -> Dict[str, Any]:
         """
-        Check current API usage against cached amounts in Redis and verify hour boundary.
-        Uses Redis for high-performance distributed rate limit enforcement.
+        Check current API usage and enforce distributed rate limiting with Redis.
+
+        This task performs critical rate limit enforcement across all worker nodes
+        using Redis as a centralized counter. It also handles hour boundary detection
+        and automatic counter resets.
+
+        Inputs:
+            - Redis connection (configured via REDIS_CONN_ID)
+            - Current hour timestamp for boundary detection
+            - Global rate limit configuration (CALL_LIMIT_PER_HOUR, SAFETY_BUFFER)
+
+        Outputs:
+            dict: Rate limit status containing:
+                - 'current_hour': Current hour key for rate limiting
+                - 'api_calls_used': Number of API calls used this hour
+                - 'api_calls_remaining': Remaining calls before hitting limit
+                - 'utilization_percent': Percentage of hourly limit used
+                - 'can_proceed': Boolean indicating if pipeline can continue
+                - 'limit': Configured hourly rate limit
+                - 'redis_source': True if data comes from Redis
+                - 'hour_reset': True if hour boundary caused counter reset
+
+        Side Effects:
+            - Updates Redis counters for distributed rate tracking
+            - Resets counters automatically on hour boundary
+            - Logs detailed rate limit status for monitoring
+
+        Error Handling:
+            - Falls back to conservative in-memory limits if Redis fails
+            - Uses hardcoded safety margins when distributed state unavailable
+            - Logs all fallback scenarios for operational awareness
+
+        Rate Limiting Logic:
+            - Enforces CALL_LIMIT_PER_HOUR with configurable safety buffer
+            - Atomic operations prevent race conditions between workers
+            - Hour boundary detection prevents counter drift
         """
         task_logger.info("🔍 Starting Redis rate limit check with enhanced debugging")
 
@@ -452,7 +637,35 @@ def courtlistener_pipeline_dag():
 
     @task
     def get_existing_dockets() -> List[str]:
-        """Get a list of existing docket IDs from Qdrant (unchanged from original)."""
+        """
+        Retrieve existing docket IDs from Qdrant vector database for deduplication.
+
+        This task queries the Qdrant collection to get all existing docket IDs,
+        enabling the pipeline to skip processing documents that have already
+        been vectorized and stored.
+
+        Inputs:
+            - Vector processor configuration (model name, collection name)
+            - Qdrant connection settings from config
+
+        Outputs:
+            List[str]: List of existing docket ID strings already in the vector database
+
+        Side Effects:
+            - Creates vector processor instance from pool
+            - Establishes connection to Qdrant database
+            - May trigger vector processor pool management (LRU eviction)
+
+        Error Handling:
+            - Returns empty list if Qdrant connection fails
+            - Logs connection errors for debugging
+            - Continues pipeline execution to process all dockets
+
+        Performance Notes:
+            - Uses connection pooling for efficient resource management
+            - Results used for deduplication in downstream tasks
+            - Critical for avoiding duplicate processing in incremental runs
+        """
         config = load_config()
         processor = vector_processor_pool.get_processor(
             model_name=config.vector_processing.embedding_model,
@@ -463,7 +676,39 @@ def courtlistener_pipeline_dag():
 
     @task
     def fetch_dockets_within_redis_rate_limit(court: str, rate_limit_state: Dict[str, Any]) -> List[int]:
-        """Enhanced docket fetching with Redis-based rate limit awareness."""
+        """
+        Fetch docket IDs from CourtListener API with Redis-enforced rate limiting.
+
+        This task integrates with the distributed rate limiting system to fetch
+        dockets while staying within API limits. It uses the rate limit state
+        from Redis to determine how many API calls can be safely made.
+
+        Inputs:
+            court (str): Court identifier (e.g., 'scotus', 'ca9')
+            rate_limit_state (Dict[str, Any]): Rate limit status from Redis containing:
+                - 'can_proceed': Boolean indicating if API calls are allowed
+                - 'api_calls_remaining': Number of API calls remaining this hour
+                - 'api_calls_used': Number of API calls already used
+
+        Outputs:
+            List[int]: List of docket IDs to be processed by downstream tasks
+
+        Side Effects:
+            - Makes API calls to CourtListener /dockets/ endpoint
+            - Updates Redis counters for each API call made
+            - Logs API usage and rate limit status
+
+        Error Handling:
+            - Stops processing if rate limit exceeded
+            - Raises AirflowSkipException for rate limit violations
+            - Logs detailed error information for monitoring
+
+        Rate Limiting Logic:
+            - Checks Redis state before making any API calls
+            - Uses atomic Redis operations to track API usage
+            - Respects minimum calls per docket (MIN_CALLS_PER_DOCKET)
+            - Implements safety buffers to prevent limit breaches
+        """
         remaining_calls = rate_limit_state["api_calls_remaining"]
 
         task_logger.info(f"🎯 Fetching dockets with rate limit state: {rate_limit_state}")
@@ -528,13 +773,239 @@ def courtlistener_pipeline_dag():
 
         return docket_ids
 
+    def _check_rate_limit_status(redis_hook: RedisRateLimitHook, docket_id: int) -> Optional[Dict[str, Any]]:
+        """Check Redis rate limit status and return skip result if limits exceeded."""
+        rate_status = redis_hook.get_current_rate_limit_status()
+
+        if not rate_status['can_proceed']:
+            task_logger.warning(f"Redis rate limit check failed for docket {docket_id}: "
+                              f"{rate_status['api_calls_used']}/{rate_status['limit']} calls used")
+            return {
+                "docket_id": docket_id,
+                "api_calls_made": 0,
+                "status": "skipped_rate_limit_redis",
+                "message": f"Redis rate limit exceeded: {rate_status['api_calls_used']}/{rate_status['limit']}"
+            }
+
+        if rate_status['api_calls_remaining'] < MIN_CALLS_PER_DOCKET:
+            task_logger.warning(f"Insufficient remaining calls ({rate_status['api_calls_remaining']}) for docket {docket_id}")
+            return {
+                "docket_id": docket_id,
+                "api_calls_made": 0,
+                "status": "skipped_rate_limit",
+                "message": f"Insufficient API calls remaining: {rate_status['api_calls_remaining']}"
+            }
+
+        return None
+
+    def _create_redis_tracked_fetch_function(docket_id: int, dag_run_id: str, redis_hook: 'RedisRateLimitHook', config: Any) -> Tuple[Callable, Callable]:
+        """Create a Redis-tracked fetch function for the pipeline."""
+        api_calls_counter = {'count': 0}
+
+        def redis_tracked_fetch(court: str, num_dockets: int, existing_dockets: set) -> List[Dict[str, Any]]:
+            """Fetch with Redis API call tracking."""
+            vp = vector_processor_pool.get_processor(
+                model_name=config.vector_processing.embedding_model,
+                collection_name=config.vector_processing.collection_name_vector
+            )
+            current_existing_dockets = vp.get_existing_docket_ids()
+
+            if docket_id in current_existing_dockets or docket_id in existing_dockets:
+                task_logger.info(f"Docket {docket_id} already exists, skipping with Redis state update")
+                redis_hook.update_docket_processing_state(
+                    dag_run_id=dag_run_id,
+                    docket_id=docket_id,
+                    api_calls_made=0,
+                    success=True
+                )
+                return []
+
+            task_logger.info(f"Docket {docket_id} is new, fetching from API with Redis call tracking")
+            headers = {"Authorization": f"Token {config.data_ingestion.api_key}"}
+
+            # Fetch main docket
+            docket_data, calls_made = _fetch_main_docket(docket_id, headers, config, redis_hook)
+            api_calls_counter['count'] += calls_made
+
+            # Fetch associated opinions if available
+            if 'cluster' in docket_data and docket_data['cluster']:
+                opinion_calls = _fetch_cluster_opinions(docket_id, docket_data['cluster'], headers, redis_hook)
+                api_calls_counter['count'] += opinion_calls
+
+            task_logger.info(f"Docket {docket_id} successfully fetched with {api_calls_counter['count']} Redis-tracked API calls")
+            return [docket_data]
+
+        def get_api_calls() -> int:
+            return api_calls_counter['count']
+
+        return redis_tracked_fetch, get_api_calls
+
+    def _fetch_main_docket(docket_id: int, headers: Dict[str, str], config: Any, redis_hook: 'RedisRateLimitHook') -> Tuple[Dict[str, Any], int]:
+        """Fetch main docket data with Redis tracking."""
+        import requests
+
+        url = f"{config.data_ingestion.api_base_url}/dockets/{docket_id}/"
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+
+        # Track API call in Redis
+        increment_result = redis_hook.atomic_increment_api_calls(1, CALL_LIMIT_PER_HOUR, REDIS_COUNTER_TTL_HOURS)
+        if not increment_result['allowed']:
+            task_logger.error(f"Redis atomic increment rejected API call: "
+                            f"current={increment_result['new_count']}, limit={increment_result['limit']}")
+            raise Exception(f"Redis rate limit enforcement: {increment_result['new_count']}/{increment_result['limit']}")
+
+        task_logger.info(f"Redis API call 1: Fetched docket {docket_id}, "
+                        f"total calls this hour: {increment_result['new_count']}")
+
+        return response.json(), 1
+
+    def _fetch_cluster_opinions(docket_id: int, cluster_url: str, headers: Dict[str, str], redis_hook: 'RedisRateLimitHook') -> int:
+        """Fetch cluster opinions with Redis tracking."""
+        import requests
+
+        api_calls_made = 0
+
+        if not isinstance(cluster_url, str) or not cluster_url.startswith('http'):
+            return api_calls_made
+
+        # Fetch cluster data
+        cluster_response = requests.get(cluster_url, headers=headers, timeout=30)
+        cluster_response.raise_for_status()
+        api_calls_made += 1
+
+        # Track cluster API call in Redis
+        increment_result = redis_hook.atomic_increment_api_calls(1, CALL_LIMIT_PER_HOUR, REDIS_COUNTER_TTL_HOURS)
+        if not increment_result['allowed']:
+            raise Exception(f"Redis rate limit during cluster fetch: {increment_result['new_count']}/{increment_result['limit']}")
+
+        task_logger.info(f"Redis API call {api_calls_made + 1}: Fetched cluster for docket {docket_id}, "
+                        f"total calls: {increment_result['new_count']}")
+
+        cluster_data = cluster_response.json()
+        if 'sub_opinions' in cluster_data:
+            opinion_calls = _fetch_sub_opinions(docket_id, cluster_data['sub_opinions'], headers, redis_hook, api_calls_made + 1)
+            api_calls_made += opinion_calls
+
+        return api_calls_made
+
+    def _fetch_sub_opinions(docket_id: int, opinion_urls: List[str], headers: Dict[str, str], redis_hook: 'RedisRateLimitHook', base_call_count: int) -> int:
+        """Fetch individual opinion documents with Redis tracking."""
+        import requests
+
+        api_calls_made = 0
+
+        for opinion_url in opinion_urls:
+            if not isinstance(opinion_url, str) or not opinion_url.startswith('http'):
+                continue
+
+            # Check rate limit before each opinion fetch
+            current_status = redis_hook.get_current_rate_limit_status()
+            if not current_status['can_proceed']:
+                task_logger.warning(f"Redis rate limit reached during opinion fetching: "
+                                  f"{current_status['api_calls_used']}/{current_status['limit']}")
+                break
+
+            opinion_response = requests.get(opinion_url, headers=headers, timeout=30)
+            opinion_response.raise_for_status()
+            api_calls_made += 1
+
+            # Track opinion API call in Redis
+            increment_result = redis_hook.atomic_increment_api_calls(1, CALL_LIMIT_PER_HOUR, REDIS_COUNTER_TTL_HOURS)
+            if not increment_result['allowed']:
+                task_logger.warning(f"Redis rate limit reached during opinion {base_call_count + api_calls_made}: "
+                                  f"{increment_result['new_count']}/{increment_result['limit']}")
+                break
+
+            task_logger.info(f"Redis API call {base_call_count + api_calls_made}: Fetched opinion for docket {docket_id}, "
+                            f"total calls: {increment_result['new_count']}")
+
+        return api_calls_made
+
+    def _format_success_result(docket_id: int, api_calls_made: int, map_index: int, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Format successful processing result."""
+        if result.get('status') == 'up_to_date':
+            return {
+                "docket_id": docket_id,
+                "api_calls_made": api_calls_made,
+                "map_index": map_index,
+                "opinions": 0,
+                "chunks": 0,
+                "vectors": 0,
+                "status": "skipped_duplicate",
+                "message": "Docket already exists in collection",
+                "redis_tracked": True
+            }
+
+        stats = result.get('stats', {})
+        return {
+            "docket_id": docket_id,
+            "api_calls_made": api_calls_made,
+            "map_index": map_index,
+            "opinions": stats.get('opinions_processed', 0),
+            "chunks": stats.get('chunks_created', 0),
+            "vectors": stats.get('vectors_uploaded', 0),
+            "status": "success" if result.get('status') == 'completed' else result.get('status', 'unknown'),
+            "message": f"Successfully processed docket {docket_id} with {api_calls_made} Redis-tracked API calls",
+            "redis_tracked": True
+        }
+
+    def _format_error_result(docket_id: int, api_calls_made: int, map_index: int, error: Exception) -> Dict[str, Any]:
+        """Format error processing result."""
+        return {
+            "docket_id": docket_id,
+            "api_calls_made": api_calls_made,
+            "map_index": map_index,
+            "opinions": 0,
+            "chunks": 0,
+            "vectors": 0,
+            "status": "failed",
+            "error": str(error),
+            "redis_tracked": True
+        }
+
     @task
     def process_docket_with_redis_tracking(docket_id: int) -> Dict[str, Any]:
         """
-        Enhanced docket processing with Redis-based API call tracking and atomic state updates.
-        Immediately caches task start time and maintains distributed state consistency.
+        Process a single docket with full Redis-based tracking and rate limiting.
+
+        This is the core processing task that handles document ingestion, chunking,
+        vectorization, and upload to Qdrant. It integrates with Redis for distributed
+        API rate limiting and progress tracking.
+
+        Inputs:
+            docket_id (int): Unique docket identifier from CourtListener
+
+        Outputs:
+            Dict[str, Any]: Processing result containing:
+                - 'docket_id': Processed docket ID
+                - 'status': Processing status ('success', 'failed', 'skipped')
+                - 'api_calls_made': Number of API calls used for this docket
+                - 'chunks_created': Number of text chunks generated
+                - 'vectors_uploaded': Number of vectors stored in Qdrant
+                - 'processing_time': Time taken to process this docket
+                - 'error_message': Error details if processing failed
+
+        Side Effects:
+            - Makes multiple API calls to CourtListener (docket, clusters, opinions)
+            - Updates Redis counters atomically for each API call
+            - Creates text chunks from legal documents
+            - Generates vector embeddings using BGE model
+            - Uploads vectors to Qdrant database
+            - Logs detailed processing metrics
+
+        Error Handling:
+            - Continues processing other dockets if one fails
+            - Tracks API calls even for failed processing
+            - Returns detailed error information for monitoring
+            - Uses circuit breaker pattern for API resilience
+
+        Rate Limiting Integration:
+            - Checks remaining API calls before processing
+            - Uses atomic Redis operations for call tracking
+            - Respects MIN_CALLS_PER_DOCKET safety threshold
+            - Coordinates with other workers via distributed state
         """
-        import requests
         from main import LegalDocumentPipeline
         from config import load_config
         from airflow.operators.python import get_current_context
@@ -547,147 +1018,40 @@ def courtlistener_pipeline_dag():
         task_logger.info(f"Starting Redis-tracked processing of docket ID: {docket_id} "
                         f"(map_index: {map_index}, dag_run: {dag_run_id})")
 
-        # Initialize Redis hook
+        # Initialize Redis hook and cache task start time
         redis_hook = RedisRateLimitHook(redis_conn_id=REDIS_CONN_ID)
-
-        # Cache task start time immediately
         start_time = redis_hook.cache_task_start_time(dag_run_id, task_id)
         task_logger.info(f"Task start time cached in Redis: {start_time}")
 
         api_calls_made = 0
 
         try:
-            # Check current rate limit state from Redis
-            rate_status = redis_hook.get_current_rate_limit_status()
+            # Check rate limit status
+            skip_result = _check_rate_limit_status(redis_hook, docket_id)
+            if skip_result:
+                skip_result["map_index"] = map_index
+                return skip_result
 
-            if not rate_status['can_proceed']:
-                task_logger.warning(f"Redis rate limit check failed for docket {docket_id}: "
-                                  f"{rate_status['api_calls_used']}/{rate_status['limit']} calls used")
-                return {
-                    "docket_id": docket_id,
-                    "api_calls_made": 0,
-                    "map_index": map_index,
-                    "status": "skipped_rate_limit_redis",
-                    "message": f"Redis rate limit exceeded: {rate_status['api_calls_used']}/{rate_status['limit']}"
-                }
-
-            # Safety check: ensure we have minimum calls for this docket
-            if rate_status['api_calls_remaining'] < MIN_CALLS_PER_DOCKET:
-                task_logger.warning(f"Insufficient remaining calls ({rate_status['api_calls_remaining']}) for docket {docket_id}")
-                return {
-                    "docket_id": docket_id,
-                    "api_calls_made": 0,
-                    "map_index": map_index,
-                    "status": "skipped_rate_limit",
-                    "message": f"Insufficient API calls remaining: {rate_status['api_calls_remaining']}"
-                }
-
-            # Load config and override for single docket processing
+            # Load config and initialize pipeline
             config = load_config()
             config.data_ingestion.num_dockets = 1
-
-            # Initialize the pipeline
             pipeline = LegalDocumentPipeline(config)
 
-            # Store original fetch method
+            # Create and inject Redis-tracked fetch function
             original_fetch = pipeline._fetch_all_dockets_paginated
-
-            def redis_tracked_fetch(court: str, num_dockets: int, existing_dockets: set):
-                """Fetch with Redis API call tracking."""
-                nonlocal api_calls_made
-
-                vp = vector_processor_pool.get_processor(
-                    model_name=config.vector_processing.embedding_model,
-                    collection_name=config.vector_processing.collection_name_vector
-                )
-                current_existing_dockets = vp.get_existing_docket_ids()
-
-                if docket_id in current_existing_dockets or docket_id in existing_dockets:
-                    task_logger.info(f"Docket {docket_id} already exists, skipping with Redis state update")
-                    # Update Redis state even for skipped dockets
-                    redis_hook.update_docket_processing_state(
-                        dag_run_id=dag_run_id,
-                        docket_id=docket_id,
-                        api_calls_made=0,
-                        success=True
-                    )
-                    return []
-
-                task_logger.info(f"Docket {docket_id} is new, fetching from API with Redis call tracking")
-                headers = {"Authorization": f"Token {config.data_ingestion.api_key}"}
-
-                # API Call 1: Fetch main docket
-                url = f"{config.data_ingestion.api_base_url}/dockets/{docket_id}/"
-                response = requests.get(url, headers=headers, timeout=30)
-                response.raise_for_status()
-                api_calls_made += 1
-
-                # Pre-check Redis rate limit after each API call
-                increment_result = redis_hook.atomic_increment_api_calls(1, CALL_LIMIT_PER_HOUR)
-                if not increment_result['allowed']:
-                    task_logger.error(f"Redis atomic increment rejected API call: "
-                                    f"current={increment_result['new_count']}, limit={increment_result['limit']}")
-                    raise Exception(f"Redis rate limit enforcement: {increment_result['new_count']}/{increment_result['limit']}")
-
-                task_logger.info(f"Redis API call {api_calls_made}: Fetched docket {docket_id}, "
-                                f"total calls this hour: {increment_result['new_count']}")
-
-                docket = response.json()
-
-                # API Calls 2+: Fetch associated opinions with Redis tracking
-                if 'cluster' in docket and docket['cluster']:
-                    cluster_url = docket['cluster']
-                    if isinstance(cluster_url, str) and cluster_url.startswith('http'):
-                        cluster_response = requests.get(cluster_url, headers=headers, timeout=30)
-                        cluster_response.raise_for_status()
-                        api_calls_made += 1
-
-                        # Redis atomic increment for cluster call
-                        increment_result = redis_hook.atomic_increment_api_calls(1, CALL_LIMIT_PER_HOUR)
-                        if not increment_result['allowed']:
-                            raise Exception(f"Redis rate limit during cluster fetch: {increment_result['new_count']}/{increment_result['limit']}")
-
-                        task_logger.info(f"Redis API call {api_calls_made}: Fetched cluster for docket {docket_id}, "
-                                        f"total calls: {increment_result['new_count']}")
-
-                        cluster_data = cluster_response.json()
-                        if 'sub_opinions' in cluster_data:
-                            for opinion_url in cluster_data['sub_opinions']:
-                                if isinstance(opinion_url, str) and opinion_url.startswith('http'):
-                                    # Check Redis rate limit before each opinion fetch
-                                    current_status = redis_hook.get_current_rate_limit_status()
-                                    if not current_status['can_proceed']:
-                                        task_logger.warning(f"Redis rate limit reached during opinion fetching: "
-                                                          f"{current_status['api_calls_used']}/{current_status['limit']}")
-                                        break
-
-                                    opinion_response = requests.get(opinion_url, headers=headers, timeout=30)
-                                    opinion_response.raise_for_status()
-                                    api_calls_made += 1
-
-                                    # Redis atomic increment for opinion call
-                                    increment_result = redis_hook.atomic_increment_api_calls(1, CALL_LIMIT_PER_HOUR)
-                                    if not increment_result['allowed']:
-                                        task_logger.warning(f"Redis rate limit reached during opinion {api_calls_made}: "
-                                                          f"{increment_result['new_count']}/{increment_result['limit']}")
-                                        break
-
-                                    task_logger.info(f"Redis API call {api_calls_made}: Fetched opinion for docket {docket_id}, "
-                                                    f"total calls: {increment_result['new_count']}")
-
-                task_logger.info(f"Docket {docket_id} successfully fetched with {api_calls_made} Redis-tracked API calls")
-                return [docket]
-
-            # Replace fetch method with Redis-tracked version
+            redis_tracked_fetch, get_api_calls = _create_redis_tracked_fetch_function(
+                docket_id, dag_run_id, redis_hook, config
+            )
             pipeline._fetch_all_dockets_paginated = redis_tracked_fetch
 
             # Run the pipeline
             result = pipeline.run_pipeline()
+            api_calls_made = get_api_calls()
 
             # Restore original method
             pipeline._fetch_all_dockets_paginated = original_fetch
 
-            # Update Redis state with final results
+            # Update Redis state with successful results
             redis_hook.update_docket_processing_state(
                 dag_run_id=dag_run_id,
                 docket_id=docket_id,
@@ -696,33 +1060,7 @@ def courtlistener_pipeline_dag():
             )
 
             task_logger.info(f"Redis state updated: docket {docket_id}, calls: {api_calls_made}, success: True")
-
-            if result.get('status') == 'up_to_date':
-                return {
-                    "docket_id": docket_id,
-                    "api_calls_made": api_calls_made,
-                    "map_index": map_index,
-                    "opinions": 0,
-                    "chunks": 0,
-                    "vectors": 0,
-                    "status": "skipped_duplicate",
-                    "message": "Docket already exists in collection",
-                    "redis_tracked": True
-                }
-
-            # Extract stats from result
-            stats = result.get('stats', {})
-            return {
-                "docket_id": docket_id,
-                "api_calls_made": api_calls_made,
-                "map_index": map_index,
-                "opinions": stats.get('opinions_processed', 0),
-                "chunks": stats.get('chunks_created', 0),
-                "vectors": stats.get('vectors_uploaded', 0),
-                "status": "success" if result.get('status') == 'completed' else result.get('status', 'unknown'),
-                "message": f"Successfully processed docket {docket_id} with {api_calls_made} Redis-tracked API calls",
-                "redis_tracked": True
-            }
+            return _format_success_result(docket_id, api_calls_made, map_index, result)
 
         except Exception as e:
             task_logger.error(f"Error processing docket {docket_id} after {api_calls_made} API calls: {e}")
@@ -742,23 +1080,42 @@ def courtlistener_pipeline_dag():
             except (AirflowSkipException, AirflowFailException):
                 raise
             except Exception:
-                return {
-                    "docket_id": docket_id,
-                    "api_calls_made": api_calls_made,
-                    "map_index": map_index,
-                    "opinions": 0,
-                    "chunks": 0,
-                    "vectors": 0,
-                    "status": "failed",
-                    "error": str(e),
-                    "redis_tracked": True
-                }
+                return _format_error_result(docket_id, api_calls_made, map_index, e)
 
     @task
     def generate_redis_enhanced_summary(results: List[Dict[str, Any]],
                                        redis_state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Generate comprehensive pipeline summary with Redis state information and performance metrics.
+        Generate comprehensive pipeline summary with Redis metrics and performance analysis.
+
+        This task aggregates results from all processed dockets and combines them
+        with Redis state information to provide detailed pipeline execution metrics.
+
+        Inputs:
+            results (List[Dict[str, Any]]): List of processing results from each docket
+            redis_state (Dict[str, Any]): Redis pipeline state with API usage tracking
+
+        Outputs:
+            Dict[str, Any]: Comprehensive summary containing:
+                - 'total_dockets_processed': Count of dockets processed
+                - 'successful_dockets': Count of successfully processed dockets
+                - 'failed_dockets': Count of failed dockets with error details
+                - 'total_api_calls_made': Sum of all API calls across all dockets
+                - 'total_chunks_created': Sum of all text chunks generated
+                - 'total_vectors_uploaded': Sum of all vectors stored in Qdrant
+                - 'pipeline_duration': Total pipeline execution time
+                - 'redis_metrics': Redis connection and operation metrics
+                - 'performance_stats': Processing rates and efficiency metrics
+
+        Side Effects:
+            - Logs comprehensive pipeline summary
+            - May trigger Redis metrics logging
+            - Provides data for monitoring and alerting systems
+
+        Performance Analysis:
+            - Calculates processing rates (dockets/minute, vectors/second)
+            - Tracks API efficiency and rate limit utilization
+            - Provides insights for pipeline optimization
         """
         task_logger.info("Generating Redis-enhanced pipeline summary")
 
@@ -872,8 +1229,37 @@ def courtlistener_pipeline_dag():
     @task
     def cleanup_redis_expired_data() -> Dict[str, Any]:
         """
-        Optional cleanup task to remove expired Redis keys and maintain performance.
-        This task can be run periodically to clean up old rate limiting data.
+        Clean up expired Redis keys to maintain optimal performance and storage.
+
+        This maintenance task removes old rate limiting data, expired pipeline states,
+        and other temporary keys that are no longer needed. It helps prevent Redis
+        memory bloat and maintains consistent performance.
+
+        Inputs:
+            - Redis connection configuration
+            - Cleanup parameters (hours_back threshold)
+
+        Outputs:
+            Dict[str, Any]: Cleanup results containing:
+                - 'keys_deleted': Number of expired keys removed
+                - 'cutoff_time': Timestamp threshold for cleanup
+                - 'patterns_checked': List of key patterns examined
+                - 'cleanup_duration': Time taken for cleanup operation
+
+        Side Effects:
+            - Removes expired Redis keys permanently
+            - Frees up Redis memory space
+            - Logs cleanup statistics
+
+        Performance Impact:
+            - Improves Redis query performance by reducing key count
+            - Prevents memory exhaustion in long-running deployments
+            - Maintains consistent rate limiting accuracy
+
+        Configuration:
+            - Configurable retention period via environment variables
+            - Safe deletion of only expired keys (preserves active data)
+            - Respects Redis key TTL settings
         """
         try:
             redis_hook = RedisRateLimitHook(redis_conn_id=REDIS_CONN_ID)

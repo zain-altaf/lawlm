@@ -29,6 +29,84 @@ from airflow.models import Connection
 logger = logging.getLogger(__name__)
 
 
+class RedisConnectionMetrics:
+    """Track Redis connection metrics and failures for monitoring."""
+
+    def __init__(self):
+        self.connection_attempts = 0
+        self.connection_failures = 0
+        self.operation_failures = 0
+        self.last_failure_time = None
+        self.last_failure_reason = None
+        self.consecutive_failures = 0
+        self.total_operations = 0
+
+    def record_connection_attempt(self):
+        """Record a connection attempt."""
+        self.connection_attempts += 1
+
+    def record_connection_failure(self, reason: str):
+        """Record a connection failure."""
+        self.connection_failures += 1
+        self.consecutive_failures += 1
+        self.last_failure_time = datetime.now()
+        self.last_failure_reason = reason
+        logger.warning(f"Redis connection failure #{self.connection_failures}: {reason}")
+
+    def record_connection_success(self):
+        """Record a successful connection."""
+        self.consecutive_failures = 0
+
+    def record_operation_attempt(self):
+        """Record an operation attempt."""
+        self.total_operations += 1
+
+    def record_operation_failure(self, operation: str, reason: str):
+        """Record an operation failure."""
+        self.operation_failures += 1
+        logger.warning(f"Redis operation '{operation}' failed: {reason}")
+
+    def get_metrics(self) -> dict:
+        """Get current metrics summary."""
+        success_rate = 0.0
+        if self.connection_attempts > 0:
+            success_rate = ((self.connection_attempts - self.connection_failures) / self.connection_attempts) * 100
+
+        operation_success_rate = 0.0
+        if self.total_operations > 0:
+            operation_success_rate = ((self.total_operations - self.operation_failures) / self.total_operations) * 100
+
+        return {
+            'connection_attempts': self.connection_attempts,
+            'connection_failures': self.connection_failures,
+            'connection_success_rate': round(success_rate, 2),
+            'consecutive_failures': self.consecutive_failures,
+            'operation_attempts': self.total_operations,
+            'operation_failures': self.operation_failures,
+            'operation_success_rate': round(operation_success_rate, 2),
+            'last_failure_time': self.last_failure_time.isoformat() if self.last_failure_time else None,
+            'last_failure_reason': self.last_failure_reason
+        }
+
+    def is_unhealthy(self) -> bool:
+        """Check if Redis connection is considered unhealthy."""
+        return self.consecutive_failures >= 3
+
+    def log_metrics_summary(self):
+        """Log a summary of metrics."""
+        metrics = self.get_metrics()
+        logger.info(f"📊 Redis Metrics Summary:")
+        logger.info(f"  Connection Success Rate: {metrics['connection_success_rate']}% ({metrics['connection_attempts'] - metrics['connection_failures']}/{metrics['connection_attempts']})")
+        logger.info(f"  Operation Success Rate: {metrics['operation_success_rate']}% ({metrics['operation_attempts'] - metrics['operation_failures']}/{metrics['operation_attempts']})")
+        logger.info(f"  Consecutive Failures: {metrics['consecutive_failures']}")
+        if metrics['last_failure_time']:
+            logger.info(f"  Last Failure: {metrics['last_failure_time']} - {metrics['last_failure_reason']}")
+
+
+# Global metrics instance
+redis_metrics = RedisConnectionMetrics()
+
+
 def validate_redis_key(key: str) -> bool:
     """Validate Redis key format to prevent injection attacks."""
     if not isinstance(key, str):
@@ -187,6 +265,8 @@ class RedisRateLimitHook(BaseHook):
         Raises:
             AirflowException: If connection cannot be established
         """
+        redis_metrics.record_connection_attempt()
+
         if self._client is not None:
             try:
                 # Test connection with ping
@@ -194,6 +274,7 @@ class RedisRateLimitHook(BaseHook):
                 return self._client
             except Exception as e:
                 logger.warning(f"Redis connection test failed, reconnecting: {e}")
+                redis_metrics.record_connection_failure(f"Ping test failed: {e}")
                 self._client = None
 
         try:
@@ -230,6 +311,7 @@ class RedisRateLimitHook(BaseHook):
 
             # Test connection
             self._client.ping()
+            redis_metrics.record_connection_success()
 
             # Load Lua scripts
             self._load_scripts()
@@ -238,6 +320,7 @@ class RedisRateLimitHook(BaseHook):
             return self._client
 
         except Exception as e:
+            redis_metrics.record_connection_failure(f"Connection failed: {e}")
             logger.error(f"Failed to connect to Redis: {e}")
             raise AirflowException(f"Cannot connect to Redis: {e}")
 
@@ -651,3 +734,25 @@ class RedisRateLimitHook(BaseHook):
         except Exception as e:
             logger.error(f"Failed to cleanup expired keys: {e}")
             return {'error': str(e), 'keys_deleted': 0}
+
+    def get_connection_metrics(self) -> dict:
+        """
+        Get Redis connection metrics for monitoring and alerting.
+
+        Returns:
+            dict: Current metrics including success rates and failure counts
+        """
+        return redis_metrics.get_metrics()
+
+    def log_metrics_summary(self):
+        """Log a summary of Redis connection metrics."""
+        redis_metrics.log_metrics_summary()
+
+    def is_connection_healthy(self) -> bool:
+        """
+        Check if Redis connection is considered healthy.
+
+        Returns:
+            bool: True if connection is healthy, False otherwise
+        """
+        return not redis_metrics.is_unhealthy()
