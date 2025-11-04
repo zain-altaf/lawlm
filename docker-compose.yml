@@ -1,0 +1,16 @@
+services:
+  data-ingestion:
+    container_name: data-ingestion
+    build:
+      context: ./data-ingestion
+      dockerfile: Dockerfile
+    image: data-ingestion:latest
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+    env_file:
+      - .env
+    volumes:
+      - ./data-ingestion/output:/app/output
+    restart: "no"
