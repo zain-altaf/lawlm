@@ -57,3 +57,8 @@ airflow/hooks/__pycache__/
 CLAUDE.md
 
 context/*
+
+*.ipynb
+
+data-ingestion/__pycache__/
+data-ingestion/output/*
