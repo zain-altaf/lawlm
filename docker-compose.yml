@@ -11,6 +11,8 @@ services:
 
   data-ingestion:
     container_name: data-ingestion
+    depends_on:
+      - qdrant
     build:
       context: ./data-ingestion
       dockerfile: Dockerfile
@@ -19,6 +21,7 @@ services:
       - "5001:5001"
     environment:
       - PORT=5001
+      - QDRANT_URL=http://qdrant:6333
     env_file:
       - .env
     volumes:
