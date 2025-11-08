@@ -27,3 +27,24 @@ services:
     volumes:
       - ./data-ingestion/output:/app/output
     restart: "no"
+
+  # chatbot:
+  #   container_name: chatbot
+  #   depends_on:
+  #     - qdrant
+  #   build:
+  #     context: ./chatbot
+  #     dockerfile: Dockerfile
+  #   image: chatbot:latest
+  #   ports:
+  #     - "5000:5000"
+  #   environment:
+  #     - PORT=5000
+  #     - QDRANT_URL=http://qdrant:6333
+  #     - COLLECTION_NAME=caselaw-chunks
+  #     - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+  #     - OPENAI_MODEL=gpt-4o-mini
+  #     - MAX_RESULTS=5
+  #   env_file:
+  #     - .env
+  #   restart: unless-stopped

@@ -20,10 +20,11 @@ vectorization:
   vector_size: 384
 
 qdrant:
-  collection_name: "caselaw-chunks"
+  collection_name: "caselaw-chunks-scotus"
   url: "http://qdrant:6333"
 
 api:
   request_delay: 0.5
   max_retries: 3
   retry_delay: 2
+  court: "scotus"

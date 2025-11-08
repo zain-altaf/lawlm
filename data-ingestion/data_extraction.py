@@ -8,7 +8,9 @@ import json
 import uuid
 import yaml
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
 from qdrant_client import models
+from datetime import datetime
 
 from opinion_utills import *
 
@@ -49,12 +51,14 @@ collection_name_vector = config['qdrant']['collection_name']
 request_delay = config['api']['request_delay']
 max_retries = config['api']['max_retries']
 retry_delay = config['api']['retry_delay']
+court = config['api']['court']
 
-def fetch_docket_page(cursor, court, page_count):
+def fetch_docket_page(cursor, existing_docket_ids, court, page_count):
     """Fetch a single page of dockets from CourtListener.
 
     Args:
         cursor: Pagination cursor for CourtListener API
+        existing_docket_ids: Set of existing docket IDs in Qdrant
         court: Court identifier (e.g., 'scotus')
         page_count: Current page number for logging
 
@@ -66,7 +70,7 @@ def fetch_docket_page(cursor, court, page_count):
     try:
         params = {
             "court": court,
-            "ordering": "id"  # Ordering by id for consistent pagination
+            "ordering": "id"  # Ordering by id for consistent pagination (earliest IDs = oldest cases)
         }
         if cursor:
             params["cursor"] = cursor
@@ -84,16 +88,7 @@ def fetch_docket_page(cursor, court, page_count):
         # Get dockets from this page
         page_dockets = response_data.get('results', [])
 
-        # Add metadata to each docket
-        for docket in page_dockets:
-            docket_id = docket.get('id', '')
-            if not docket_id:
-                raise ValueError(f"Docket without ID found on page {page_count} (cursor={cursor})")
-
-            # Add page cursor for debugging
-            docket["page_cursor"] = cursor
-
-        # Get next cursor
+        # Get next cursor - extract just the cursor value, not the full URL
         next_url = response_data.get('next')
         next_cursor = None
         if next_url:
@@ -101,7 +96,25 @@ def fetch_docket_page(cursor, court, page_count):
             query_params = urllib.parse.parse_qs(parsed.query)
             next_cursor = query_params.get('cursor', [None])[0]
 
-        logger.info(f"Page {page_count}: fetched {len(page_dockets)} dockets")
+        # Filter out existing dockets and add metadata
+        filtered_dockets = []
+        for docket in page_dockets:
+            docket_id = docket.get('id', '')
+            if not docket_id:
+                raise ValueError(f"Docket without ID found on page {page_count} (cursor={cursor})")
+
+            if docket_id in existing_docket_ids:
+                logger.info(f"Skipping existing docket ID: {docket_id}")
+                continue
+
+            # Save the NEXT cursor (for resuming from the next page)
+            docket["page_cursor"] = next_cursor
+            filtered_dockets.append(docket)
+
+        # Replace page_dockets with filtered list
+        page_dockets = filtered_dockets
+
+        logger.info(f"Page {page_count}: fetched {len(page_dockets)} new dockets (after filtering duplicates)")
         return page_dockets, next_cursor
 
     except Exception as e:
@@ -109,11 +122,12 @@ def fetch_docket_page(cursor, court, page_count):
         return None, None
 
 
-def process_docket(docket):
+def process_docket(docket, next_cursor):
     """Process a single docket to extract clusters and opinions.
 
     Args:
         docket: Docket dictionary from CourtListener API
+        next_cursor: Cursor for the next page
 
     Returns:
         list: opinions extracted from this docket
@@ -193,7 +207,7 @@ def process_docket(docket):
                             "text_stats": processed['text_stats'],
                             "date_created": opinion_data.get("date_created"),
                             "date_modified": opinion_data.get("date_modified"),
-                            "cursor": docket.get("page_cursor"),
+                            "cursor": next_cursor,
                         }
 
                         opinions.append(opinion_record)
@@ -265,7 +279,8 @@ def get_chunks(docket_opinions):
                 "citations": op.get('citations', []),
                 "legal_entities": op.get('legal_entities', {}),
                 "date_created": op.get('date_created', ''),
-                "date_modified": op.get('date_modified', '')
+                "date_modified": op.get('date_modified', ''),
+                "cursor": op.get('cursor', '')
             }
 
             all_chunks.append(chunk)
@@ -323,22 +338,6 @@ def upload_to_qdrant(chunks, embeddings, enhanced_texts, qdrant_client, collecti
         return {'status': 'no_chunks', 'vectors_created': 0}
 
     try:
-        if not qdrant_client.collection_exists(collection_name=collection_name):
-            qdrant_client.create_collection(
-                collection_name=collection_name,
-                vectors_config={
-                    'bge-small': models.VectorParams(
-                        size=vector_size,
-                        distance=models.Distance.COSINE,
-                    ),
-                },
-                sparse_vectors_config={
-                    'bm25': models.SparseVectorParams(
-                        modifier=models.Modifier.IDF,
-                    ),
-                },
-            )
-
         points = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             point_id = str(uuid.uuid4())
@@ -366,7 +365,9 @@ def upload_to_qdrant(chunks, embeddings, enhanced_texts, qdrant_client, collecti
                 'source_field': chunk.get('source_field', ''),
                 'judges': chunk.get('judges', ''),
                 'date_created': chunk.get('date_created', ''),
-                'date_modified': chunk.get('date_modified', '')
+                'date_modified': chunk.get('date_modified', ''),
+                'time_processed': datetime.now().strftime("%d-%m-%y %H:%M:%S"),
+                'cursor': chunk.get('cursor', '')
             }
 
             points.append(models.PointStruct(
@@ -400,7 +401,7 @@ def upload_to_qdrant(chunks, embeddings, enhanced_texts, qdrant_client, collecti
             'error': str(e)
         }
 
-def ingestion(num_pages=1, court='scotus'):
+def ingestion(num_pages=1, court=court):
     """Main ingestion pipeline that processes data incrementally.
 
     For each page:
@@ -413,20 +414,8 @@ def ingestion(num_pages=1, court='scotus'):
 
     Args:
         num_pages: Number of pages to process
-        court: Court identifier (default: 'scotus')
+        court: Court identifier
     """
-    from sentence_transformers import SentenceTransformer
-
-    try:
-        qdrant_client = get_qdrant_client()
-        logger.info("Connected to Qdrant")
-    except Exception as e:
-        logger.error(f"Failed to get Qdrant client: {e}")
-        return
-
-    logger.info(f"Loading embedding model: {embedding_model}")
-    embedder = SentenceTransformer(embedding_model)
-    embedder.eval()
 
     cursor = None
     page_count = 0
@@ -434,6 +423,29 @@ def ingestion(num_pages=1, court='scotus'):
     total_opinions = 0
     total_chunks = 0
     total_vectors = 0
+    processed_dockets_this_run = set()  # Track dockets processed in this run
+
+    # ensure you are connected to the qdrant client
+    try:
+        qdrant_client = get_qdrant_client()
+        logger.info("Connected to Qdrant")
+    except Exception as e:
+        logger.error(f"Failed to get Qdrant client: {e}")
+        return
+
+    # ensures collection exists
+    get_qdrant_collection(qdrant_client, collection_name_vector, vector_size)
+
+    # fetch existing docket_ids and cursor for page navigation
+    existing_docket_ids, cursor = get_existing_ids_and_cursor(qdrant_client, collection_name_vector)
+    
+    logger.info(f"Found {len(existing_docket_ids)} existing docket IDs in Qdrant")
+
+    # get the embedding model instantiated
+    logger.info(f"Loading embedding model: {embedding_model}")
+    embedder = SentenceTransformer(embedding_model)
+    embedder.eval()
+
 
     logger.info(f"Starting ingestion pipeline: {num_pages} pages from court: {court}")
 
@@ -443,7 +455,7 @@ def ingestion(num_pages=1, court='scotus'):
         logger.info(f"Processing Page {page_count}/{num_pages}")
         logger.info(f"{'='*60}")
 
-        page_dockets, next_cursor = fetch_docket_page(cursor, court, page_count)
+        page_dockets, next_cursor = fetch_docket_page(cursor, existing_docket_ids, court, page_count)
 
         if page_dockets is None:
             logger.error(f"Failed to fetch page {page_count}, stopping pipeline")
@@ -453,9 +465,15 @@ def ingestion(num_pages=1, court='scotus'):
 
         for docket_idx, docket in enumerate(page_dockets, 1):
             docket_id = docket.get('id', 'unknown')
+
+            # # Double-check: Skip if already processed in this run
+            # if docket_id in processed_dockets_this_run:
+            #     logger.warning(f"Skipping docket {docket_id} - already processed in this run")
+            #     continue
+
             logger.info(f"\n  Docket {docket_idx}/{len(page_dockets)} (ID: {docket_id})")
 
-            docket_opinions = process_docket(docket)
+            docket_opinions = process_docket(docket, next_cursor)
 
             if not docket_opinions:
                 logger.info(f"No opinions found, skipping docket")
@@ -480,6 +498,7 @@ def ingestion(num_pages=1, court='scotus'):
 
             if result['status'] == 'success':
                 total_vectors += result['vectors_created']
+                processed_dockets_this_run.add(docket_id)  # Mark as processed
                 logger.info(f"Docket {docket_id} complete!")
                 total_dockets += 1
             else:
@@ -503,9 +522,9 @@ def ingestion(num_pages=1, court='scotus'):
     logger.info(f"   Total vectors: {total_vectors}")
     logger.info(f"{'='*60}\n")
 
-def main(num_pages=1, court='scotus'):
+def main(num_pages=1, court=court):
     ingestion(num_pages=num_pages, court=court)
 
 
 if __name__ == "__main__":
-    main(num_pages=1, court='scotus')
+    main(num_pages=1, court=court)
