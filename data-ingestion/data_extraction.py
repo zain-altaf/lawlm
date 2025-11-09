@@ -1,4 +1,5 @@
-### fetch_court_data.py is integral for ingesting court data
+### fetches, processes, vectorizes, and uploads data to Qdrant
+### can be combined with orchestration to trigger on a schedule
 
 from dotenv import load_dotenv
 import os
@@ -465,11 +466,6 @@ def ingestion(num_pages=1, court=court):
 
         for docket_idx, docket in enumerate(page_dockets, 1):
             docket_id = docket.get('id', 'unknown')
-
-            # # Double-check: Skip if already processed in this run
-            # if docket_id in processed_dockets_this_run:
-            #     logger.warning(f"Skipping docket {docket_id} - already processed in this run")
-            #     continue
 
             logger.info(f"\n  Docket {docket_idx}/{len(page_dockets)} (ID: {docket_id})")
 
