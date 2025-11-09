@@ -523,4 +523,4 @@ def main(num_pages=1, court=court):
 
 
 if __name__ == "__main__":
-    main(num_pages=2, court=court)
+    main(num_pages=1, court=court)
