@@ -26,7 +26,11 @@ load_dotenv()
 api_key = os.getenv('CASELAW_API_KEY')
 headers = {'Authorization': f'Token {api_key}'} if api_key else {}
 
-config_path = os.path.join(os.path.dirname(__file__), 'config.yml')
+# Load config from project root (works both locally and in Docker)
+config_path = os.path.join(os.path.dirname(__file__), '..', 'config.yml')
+if not os.path.exists(config_path):
+    # Fallback for Docker: config is mounted at /app/config.yml
+    config_path = '/app/config.yml'
 with open(config_path, 'r') as f:
     config = yaml.safe_load(f)
 

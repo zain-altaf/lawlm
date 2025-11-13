@@ -8,6 +8,7 @@ Combines semantic (dense) and keyword (BM25) search with OpenAI for summaries.
 
 import logging
 import os
+import yaml
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,14 @@ from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
+# Load config from project root (works both locally and in Docker)
+config_path = os.path.join(os.path.dirname(__file__), '..', 'config.yml')
+if not os.path.exists(config_path):
+    # Fallback for Docker: config is mounted at /app/config.yml
+    config_path = '/app/config.yml'
+with open(config_path, 'r') as f:
+    config = yaml.safe_load(f)
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -31,13 +40,13 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Configuration from environment
+# Configuration from environment and config file
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "caselaw-chunks-scotus")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-MAX_RESULTS = int(os.getenv("MAX_RESULTS", "3"))
-PORT = int(os.getenv("PORT", "5000"))
+COLLECTION_NAME = config['qdrant']['collection_name']
+EMBEDDING_MODEL = config['vectorization']['embedding_model']
+OPENAI_MODEL = config['rag']['openai_model']
+MAX_RESULTS = config['rag']['max_results']
+PORT = config['services']['chatbot']['port']
 
 # Initialize clients
 logger.info(f"Initializing chatbot service...")
@@ -114,6 +123,12 @@ class LegalRAGService:
         Returns:
             List of search results with scores and payloads
         """
+        # Use defaults from config if not provided
+        if limit is None:
+            limit = config['rag']['max_results']
+        if score_threshold is None:
+            score_threshold = config['rag']['default_score_threshold']
+
         logger.info(f"Hybrid search: '{query}' (limit={limit}, threshold={score_threshold})")
 
         try:
@@ -123,6 +138,9 @@ class LegalRAGService:
             # Create dense vector for the query
             query_vector = self.embedder.encode(enhanced_query).tolist()
 
+            # Get RRF prefetch multiplier from config
+            rrf_multiplier = config['rag']['rrf_prefetch_multiplier']
+
             # Perform hybrid search with RRF using prefetch
             search_result = self.qdrant_client.query_points(
                 collection_name=self.collection_name,
@@ -131,7 +149,7 @@ class LegalRAGService:
                     models.Prefetch(
                         query=query_vector,
                         using="bge-small",
-                        limit=(5 * limit),  # Fetch more for better fusion
+                        limit=(rrf_multiplier * limit),  # Fetch more for better fusion
                     ),
                     # Sparse vector search (keyword/BM25)
                     models.Prefetch(
@@ -140,7 +158,7 @@ class LegalRAGService:
                             model="Qdrant/bm25",
                         ),
                         using="bm25",
-                        limit=(5 * limit),
+                        limit=(rrf_multiplier * limit),
                     ),
                 ],
                 # Use RRF to combine results
@@ -261,7 +279,7 @@ Please provide a concise 150-word summary that answers the query based on these 
     def query(
         self,
         question: str,
-        score_threshold: float = 0.4,
+        score_threshold: float = None,
         max_results: Optional[int] = None
     ) -> Dict[str, Any]:
         """
@@ -269,14 +287,21 @@ Please provide a concise 150-word summary that answers the query based on these 
 
         Args:
             question: User's legal question
-            score_threshold: Minimum relevance score
-            max_results: Maximum number of results (uses default if None)
+            score_threshold: Minimum relevance score (uses config default if None)
+            max_results: Maximum number of results (uses config default if None)
 
         Returns:
             Dictionary with summary, sources, and metadata
         """
         start_time = datetime.now()
-        limit = max_results if max_results is not None else self.max_results
+
+        # Use config defaults if not provided
+        if max_results is None:
+            max_results = config['rag']['max_results']
+        if score_threshold is None:
+            score_threshold = config['rag']['default_score_threshold']
+
+        limit = max_results
 
         # Step 1: Search relevant documents
         try:
@@ -408,7 +433,7 @@ def query_endpoint():
             }), 400
 
         question = data['question']
-        score_threshold = data.get('score_threshold', 0.4)
+        score_threshold = data.get('score_threshold', None)
         max_results = data.get('max_results', None)
 
         logger.info(f"Received query: '{question}'")
@@ -458,8 +483,8 @@ def search_endpoint():
             }), 400
 
         query = data['query']
-        limit = data.get('limit', 3)
-        score_threshold = data.get('score_threshold', 0.4)
+        limit = data.get('limit', None)
+        score_threshold = data.get('score_threshold', None)
 
         logger.info(f"Received search: '{query}'")
 

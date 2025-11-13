@@ -1,0 +1,51 @@
+# Legal Document Processing Pipeline Configuration
+# This configuration file is used by all services in the pipeline
+
+# Chunking Configuration
+chunking:
+  chunk_size_chars: 1536
+  overlap_chars: 300
+  min_chunk_size_chars: 400
+  quality_threshold: 0.3
+  separators:
+    - "\n\n"
+    - ". "
+    - "? "
+    - "! "
+    - "\n"
+    - " "
+    - ""
+
+# Vectorization and Embedding Configuration
+vectorization:
+  embedding_model: "BAAI/bge-small-en-v1.5"
+  batch_size: 50
+  memory_cleanup_frequency: 100
+  device: "cpu"
+  vector_size: 384
+
+# Qdrant Database Configuration
+qdrant:
+  collection_name: "caselaw-chunks-scotus"
+  # URL is read from QDRANT_URL environment variable
+
+# CourtListener API Configuration
+api:
+  request_delay: 0.5
+  max_retries: 3
+  retry_delay: 2
+  court: "scotus"
+
+# Service Ports Configuration
+services:
+  data_ingestion:
+    port: 5001
+  chatbot:
+    port: 5000
+
+# Chatbot/RAG Configuration
+rag:
+  openai_model: "gpt-4o-mini"
+  max_results: 3
+  default_score_threshold: 0.4
+  rrf_prefetch_multiplier: 5  # Multiply limit by this for better fusion
