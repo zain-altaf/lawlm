@@ -20,14 +20,16 @@ lawlm/
 ├── docker-compose.yml          # Docker orchestration configuration
 ├── .env.template               # Environment variables template (API keys only)
 ├── config.yml                  # Centralized configuration (chunking, models, ports, etc.)
+├── Dockerfile.base             # Shared base image with common dependencies
+├── requirements-base.txt       # Shared Python dependencies (PyTorch, transformers, etc.)
 ├── data-ingestion/             # Data ingestion microservice
-│   ├── Dockerfile              # Container definition for ingestion service
-│   ├── requirements.txt        # Python dependencies
+│   ├── Dockerfile              # Container definition (extends base image)
+│   ├── requirements.txt        # Service-specific Python dependencies
 │   ├── data_extraction.py      # Main ingestion pipeline
 │   └── opinion_utills.py       # Text processing utilities
 ├── chatbot/                    # Web-based RAG query service
-│   ├── Dockerfile              # Container definition for chatbot service
-│   ├── requirements.txt        # Python dependencies
+│   ├── Dockerfile              # Container definition (extends base image)
+│   ├── requirements.txt        # Service-specific Python dependencies
 │   ├── app.py                  # Flask REST API
 │   └── static/
 │       └── index.html          # Web interface for legal search
@@ -97,6 +99,23 @@ The application can be customized via two files:
    - **API**: `court` (scotus), `request_delay` (0.5s), `max_retries` (3)
    - **Services**: Ports for data-ingestion (5001) and chatbot (5000)
    - **RAG**: `openai_model` (gpt-4o-mini), `max_results` (3), `default_score_threshold` (0.4)
+
+### Docker Architecture
+
+The project uses an **optimized multi-stage Docker build** to minimize storage usage:
+
+**Shared Base Image** ([Dockerfile.base](Dockerfile.base)):
+- Contains all common dependencies (PyTorch, transformers, qdrant-client, etc.)
+- Built once and shared by both services
+- Size: ~5.86GB
+
+**Service-Specific Images**:
+- `data-ingestion`: Base + service-specific deps (~40MB)
+- `chatbot`: Base + service-specific deps (~10MB)
+
+**Storage Savings**: ~50% reduction compared to separate builds (5.91GB vs 11.77GB)
+
+The base image is automatically built first via `docker compose build`, and both services extend it. Docker's layer caching ensures the base layers are shared on disk.
 
 ## 🔄 Open Tasks / TODO
 

@@ -1,4 +1,10 @@
 services:
+  base-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.base
+    image: lawlm-base:latest
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -7,20 +13,17 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test:
+        ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333' || exit 1"]
       interval: 10s
-      timeout: 5s
+      timeout: 10s
       retries: 5
+      start_period: 15s
 
   data-ingestion:
-    container_name: data-ingestion
-    depends_on:
-      qdrant:
-        condition: service_healthy
-        restart: true
     build:
-      context: ./data-ingestion
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./data-ingestion/Dockerfile
     image: data-ingestion:latest
     ports:
       - "5001:5001"
@@ -28,20 +31,17 @@ services:
       - .env
     volumes:
       - ./config.yml:/app/config.yml
-      - ./data-ingestion/output:/app/output
-    restart: unless-stopped
-
-  chatbot:
-    container_name: chatbot
+    restart: "no"
+    container_name: data-ingestion
     depends_on:
       qdrant:
         condition: service_healthy
         restart: true
-      data-ingestion:
-        condition: service_started
+
+  chatbot:
     build:
-      context: ./chatbot
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./chatbot/Dockerfile
     image: chatbot:latest
     ports:
       - "5000:5000"
@@ -50,3 +50,8 @@ services:
     volumes:
       - ./config.yml:/app/config.yml
     restart: unless-stopped
+    container_name: chatbot
+    depends_on:
+      qdrant:
+        condition: service_healthy
+        restart: true

@@ -13,11 +13,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
+import requests
+import PyPDF2
+import io
 
 load_dotenv()
 
@@ -405,7 +408,7 @@ def health():
 @app.route('/query', methods=['POST'])
 def query_endpoint():
     """
-    Query endpoint for legal RAG.
+    Query endpoint for legal RAG - now just returns search results without summary.
 
     Request body:
     {
@@ -416,11 +419,10 @@ def query_endpoint():
 
     Response:
     {
-        "question": "...",
-        "summary": "...",
-        "sources": [...],
+        "query": "...",
+        "results": [...],
         "search_type": "hybrid_rrf",
-        "processing_time": 1.23,
+        "processing_time": 0.45,
         "documents_found": 3
     }
     """
@@ -438,13 +440,22 @@ def query_endpoint():
 
         logger.info(f"Received query: '{question}'")
 
-        result = rag_service.query(
-            question=question,
-            score_threshold=score_threshold,
-            max_results=max_results
+        # Use hybrid_search directly instead of full RAG query
+        start_time = datetime.now()
+        results = rag_service.hybrid_search(
+            query=question,
+            limit=max_results,
+            score_threshold=score_threshold
         )
+        processing_time = (datetime.now() - start_time).total_seconds()
 
-        return jsonify(result), 200
+        return jsonify({
+            "query": question,
+            "results": results,
+            "search_type": "hybrid_rrf",
+            "processing_time": processing_time,
+            "documents_found": len(results)
+        }), 200
 
     except Exception as e:
         logger.error(f"Query endpoint error: {e}")
@@ -527,6 +538,182 @@ def collection_info():
 
     except Exception as e:
         logger.error(f"Collection info error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+@app.route('/case/fetch', methods=['POST'])
+def fetch_case():
+    """
+    Fetch full case text from download_url.
+
+    Request body:
+    {
+        "download_url": "https://www.supremecourt.gov/opinions/...",
+        "case_name": "Brown v. Board of Education",
+        "chunk_text": "text from the chunk for context"
+    }
+
+    Response:
+    {
+        "case_name": "...",
+        "full_text": "...",
+        "chunk_text": "...",
+        "success": true
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'download_url' not in data:
+            return jsonify({
+                "error": "Missing 'download_url' field in request body"
+            }), 400
+
+        download_url = data['download_url']
+        case_name = data.get('case_name', 'Unknown Case')
+        chunk_text = data.get('chunk_text', '')
+
+        logger.info(f"Fetching case from: {download_url}")
+
+        # Fetch the PDF
+        response = requests.get(download_url, timeout=30)
+        response.raise_for_status()
+
+        # Extract text from PDF
+        pdf_file = io.BytesIO(response.content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+
+        full_text = ""
+        for page in pdf_reader.pages:
+            full_text += page.extract_text() + "\n"
+
+        logger.info(f"Successfully extracted {len(full_text)} characters from PDF")
+
+        return jsonify({
+            "case_name": case_name,
+            "full_text": full_text,
+            "chunk_text": chunk_text,
+            "success": True,
+            "text_length": len(full_text)
+        }), 200
+
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch PDF: {e}")
+        return jsonify({
+            "error": f"Failed to fetch PDF: {str(e)}",
+            "success": False
+        }), 500
+    except Exception as e:
+        logger.error(f"Case fetch error: {e}")
+        return jsonify({
+            "error": str(e),
+            "success": False
+        }), 500
+
+
+@app.route('/case/summarize-stream', methods=['POST'])
+def summarize_case_stream():
+    """
+    Stream GPT summary of full case text character by character using SSE.
+
+    Request body:
+    {
+        "case_name": "Brown v. Board of Education",
+        "full_text": "...",
+        "chunk_text": "...",
+        "user_question": "What is the holding in this case?"
+    }
+
+    Response: Server-Sent Events stream
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'full_text' not in data:
+            return jsonify({
+                "error": "Missing 'full_text' field in request body"
+            }), 400
+
+        case_name = data.get('case_name', 'Unknown Case')
+        full_text = data['full_text']
+        chunk_text = data.get('chunk_text', '')
+        user_question = data.get('user_question', '')
+
+        if not OPENAI_AVAILABLE or not openai_client:
+            return jsonify({
+                "error": "OpenAI API not available. Please set OPENAI_API_KEY."
+            }), 503
+
+        logger.info(f"Streaming summary for case: {case_name}")
+
+        # Truncate full_text if too long (GPT token limits)
+        max_chars = 12000  # Roughly 3000 tokens
+        if len(full_text) > max_chars:
+            full_text = full_text[:max_chars] + "\n\n[Document truncated due to length...]"
+
+        system_prompt = """You are a legal research assistant. Provide a comprehensive summary of the legal case that answers the user's question.
+
+Guidelines:
+- Start with the case name and basic information (court, date, parties)
+- Explain the key facts of the case
+- Describe the legal issues presented
+- Explain the court's holding and reasoning
+- Mention any important concurrences or dissents
+- Keep the summary well-structured and professional
+- Aim for 300-500 words for a complete analysis"""
+
+        user_prompt = f"""Case Name: {case_name}
+
+User's Question: {user_question}
+
+Relevant Passage from Search:
+{chunk_text[:500]}
+
+Full Case Text:
+{full_text}
+
+Please provide a comprehensive summary that answers the user's question based on this case."""
+
+        def generate():
+            try:
+                # Stream from OpenAI
+                stream = openai_client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    max_tokens=800,
+                    temperature=0.3,
+                    stream=True
+                )
+
+                for chunk in stream:
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        # Send as SSE format
+                        yield f"data: {content}\n\n"
+
+                # Send completion signal
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                logger.error(f"Streaming error: {e}")
+                yield f"data: [ERROR] {str(e)}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no'
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Summarize stream error: {e}")
         return jsonify({
             "error": str(e)
         }), 500

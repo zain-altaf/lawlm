@@ -1,9 +1,3 @@
-python-dotenv
-requests
+# Service-specific dependencies (base dependencies in requirements-base.txt)
 beautifulsoup4
-qdrant-client
-sentence-transformers
 langchain-text-splitters
-numpy
-pyyaml
-fastembed
