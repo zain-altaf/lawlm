@@ -39,6 +39,7 @@ def api_request_with_retry(url, headers, max_retries=3, retry_delay=2, request_d
                 return None
     return None
 
+
 def extract_legal_info(text: str) -> Dict[str, Any]:
     """
     Extract legal citations and entities from text using regex patterns.
@@ -315,109 +316,3 @@ def starts_at_sentence_boundary(text: str) -> bool:
         return True
         
     return False
-
-
-def get_qdrant_client() -> QdrantClient:
-    """
-    Get a Qdrant client instance.
-    """
-    qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
-    client = QdrantClient(url=qdrant_url)
-    return client
-
-
-def get_qdrant_collection(qdrant_client: QdrantClient, collection_name: str, vector_size: int = 768):
-    """
-    Ensure Qdrant collection exists; create if not.
-    Args:
-        qdrant_client: Qdrant client instance
-        collection_name: Name of the collection
-        vector_size: Size of the vectors
-    """
-
-    # if collection doesn't exist, create it
-    if not qdrant_client.collection_exists(collection_name):
-        qdrant_client.create_collection(
-            collection_name=collection_name,
-            vectors_config={
-                'bge-small': models.VectorParams(
-                    size=vector_size,
-                    distance=models.Distance.COSINE,
-                ),
-            },
-            sparse_vectors_config={
-                'bm25': models.SparseVectorParams(
-                    modifier=models.Modifier.IDF,
-                ),
-            },
-        )
-        logger.info(f"Created Qdrant collection: {collection_name}")
-        return []
-    else:
-        logger.info(f"Qdrant collection exists: {collection_name}") 
-
-
-def get_existing_ids_and_cursor(qdrant_client: QdrantClient, collection_name: str):
-    """
-    Retrieve all unique docket_ids and the most recent cursor from a Qdrant collection.
-
-    Args:
-        qdrant_client: Qdrant client instance
-        collection_name: Name of the collection
-
-    Returns:
-        tuple[set, str | None]: (set of unique docket_ids, most recent cursor string)
-    """
-    try:
-        collection = qdrant_client.get_collection(collection_name)
-    except Exception as e:
-        logger.error(f"Could not access collection '{collection_name}': {e}")
-        return set(), None
-
-    if collection.points_count == 0:
-        logger.info("Collection is empty — no docket IDs found.")
-        return set(), None
-
-    unique_docket_ids = set()
-    most_recent_point = None
-    most_recent_time = None
-    next_page = None
-
-    while True:
-        try:
-            points, next_page = qdrant_client.scroll(
-                collection_name=collection_name,
-                scroll_filter=None,
-                with_payload=True,
-                limit=1000,
-                offset=next_page
-            )
-
-            for point in points:
-                payload = point.payload or {}
-                docket_id = payload.get("docket_id")
-                if docket_id:
-                    unique_docket_ids.add(docket_id)
-
-                # Parse time_processed if it exists
-                time_str = payload.get("time_processed")
-                if time_str:
-                    try:
-                        time_obj = datetime.strptime(time_str, "%d-%m-%y %H:%M:%S")
-                        if most_recent_time is None or time_obj > most_recent_time:
-                            most_recent_time = time_obj
-                            most_recent_point = payload
-                    except ValueError:
-                        pass
-
-            if not next_page:
-                break
-
-        except Exception as e:
-            logger.error(f"Error while scrolling collection: {e}")
-            break
-
-    latest_cursor = most_recent_point.get("cursor") if most_recent_point else None
-    logger.info(f"Found {len(unique_docket_ids)} unique docket IDs, latest cursor: {latest_cursor}")
-
-    return unique_docket_ids, latest_cursor

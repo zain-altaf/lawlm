@@ -34,9 +34,10 @@ services:
     restart: "no"
     container_name: data-ingestion
     depends_on:
+      base-image:
+        condition: service_started
       qdrant:
         condition: service_healthy
-        restart: true
 
   chatbot:
     build:
@@ -52,6 +53,7 @@ services:
     restart: unless-stopped
     container_name: chatbot
     depends_on:
+      base-image:
+        condition: service_started
       qdrant:
         condition: service_healthy
-        restart: true

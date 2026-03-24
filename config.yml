@@ -23,6 +23,15 @@ vectorization:
   memory_cleanup_frequency: 100
   device: "cpu"
   vector_size: 384
+  citation_types:
+    [
+      "html_with_citations",
+      "plain_text",
+      "html_columbia",
+      "html_lawbox",
+      "html_anon_2020",
+      "html",
+    ]
 
 # Qdrant Database Configuration
 qdrant:
@@ -48,4 +57,4 @@ rag:
   openai_model: "gpt-4o-mini"
   max_results: 3
   default_score_threshold: 0.4
-  rrf_prefetch_multiplier: 5  # Multiply limit by this for better fusion
+  rrf_prefetch_multiplier: 5 # Multiply limit by this for better fusion
