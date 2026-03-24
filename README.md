@@ -21,18 +21,23 @@ lawlm/
 ├── .env.template               # Environment variables template (API keys only)
 ├── config.yml                  # Centralized configuration (chunking, models, ports, etc.)
 ├── Dockerfile.base             # Shared base image with common dependencies
-├── requirements-base.txt       # Shared Python dependencies (PyTorch, transformers, etc.)
+├── requirements.txt            # Shared Python dependencies (PyTorch, transformers, etc.)
 ├── data-ingestion/             # Data ingestion microservice
 │   ├── Dockerfile              # Container definition (extends base image)
 │   ├── requirements.txt        # Service-specific Python dependencies
 │   ├── data_extraction.py      # Main ingestion pipeline
-│   └── opinion_utills.py       # Text processing utilities
+│   ├── opinion_utills.py       # Text processing utilities
+│   ├── opinion.py              # Legal opinion data models
+│   ├── chunk.py                # Text chunking utilities
+│   └── qdrant_manager.py       # Qdrant vector database management
 ├── chatbot/                    # Web-based RAG query service
 │   ├── Dockerfile              # Container definition (extends base image)
 │   ├── requirements.txt        # Service-specific Python dependencies
 │   ├── app.py                  # Flask REST API
 │   └── static/
 │       └── index.html          # Web interface for legal search
+├── tests/                      # Test suite
+│   └── test_duplicates.py      # Tests for duplicate detection
 └── qdrant_storage/             # Local Qdrant data (auto-created by Docker)
 ```
 
@@ -62,6 +67,7 @@ docker compose up --build # the data ingestion service will, by default, process
 ```
 
 This will start three services:
+
 - **Qdrant** (vector database) on ports 6333 and 6334
 - **Data ingestion** service that processes legal cases and stores them in Qdrant
 - **Chatbot** web interface on http://localhost:5000
@@ -69,12 +75,14 @@ This will start three services:
 ### Using the Application
 
 Once all services are running, you can access the web interface:
-   - Navigate to http://localhost:5000 in your browser
-   - Enter your legal question in the search box
-   - View AI-generated summaries with source cases and relevant passages
-   - Click "View Full Case" to access original PDF documents
+
+- Navigate to http://localhost:5000 in your browser
+- Enter your legal question in the search box
+- View AI-generated summaries with source cases and relevant passages
+- Click "View Full Case" to access original PDF documents
 
 3. **Stopping Services**
+
    ```bash
    # Stop all services
    docker compose down
@@ -105,11 +113,13 @@ The application can be customized via two files:
 The project uses an **optimized multi-stage Docker build** to minimize storage usage:
 
 **Shared Base Image** ([Dockerfile.base](Dockerfile.base)):
+
 - Contains all common dependencies (PyTorch, transformers, qdrant-client, etc.)
 - Built once and shared by both services
 - Size: ~5.86GB
 
 **Service-Specific Images**:
+
 - `data-ingestion`: Base + service-specific deps (~40MB)
 - `chatbot`: Base + service-specific deps (~10MB)
 
