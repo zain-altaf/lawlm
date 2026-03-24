@@ -27,9 +27,9 @@ lawlm/
 │   ├── requirements.txt        # Service-specific Python dependencies
 │   ├── data_extraction.py      # Main ingestion pipeline
 │   ├── opinion_utills.py       # Text processing utilities
-│   ├── opinion.py              # Legal opinion data models
-│   ├── chunk.py                # Text chunking utilities
-│   └── qdrant_manager.py       # Qdrant vector database management
+│   ├── opinion.py              # Opinion data model
+│   ├── chunk.py                # Chunking utilities
+│   └── qdrant_manager.py       # Qdrant database manager
 ├── chatbot/                    # Web-based RAG query service
 │   ├── Dockerfile              # Container definition (extends base image)
 │   ├── requirements.txt        # Service-specific Python dependencies
@@ -37,7 +37,7 @@ lawlm/
 │   └── static/
 │       └── index.html          # Web interface for legal search
 ├── tests/                      # Test suite
-│   └── test_duplicates.py      # Tests for duplicate detection
+│   └── test_duplicates.py      # Tests for duplicate detection and ingestion
 └── qdrant_storage/             # Local Qdrant data (auto-created by Docker)
 ```
 
