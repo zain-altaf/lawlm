@@ -1,6 +1,6 @@
 # Legal Document Processing Pipeline
 
-A legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant locally for hybrid search.
+A legal document processing pipeline that ingests legal documents from the CourtListener API, processes them into chunks, creates vector embeddings, and stores them in Qdrant locally for hybrid search. Users can then ask it questions using a chat bot to get: 1. a RAG based answer from an LLM, and 2. top 3 cases based on relevance between query and qdrant data points.
 
 ## Overview
 
@@ -10,159 +10,122 @@ This pipeline provides core functionality for legal document processing and retr
 - **Text Processing**: Uses RecursiveCharacterTextSplitter for chunking documents with boundary and text overlap across chunks
 - **Vector Processing**: Creates embeddings using BAAI/bge-small-en-v1.5 and BM25 for sparse embeddings
 - **Storage**: local Qdrant vector database
-- **Query Interface**: RAG-based legal document retrieval system available in legal_rag_query.py
+- **Query Interface**: RAG-based legal document retrieval system available in chatbot service
 
 ## 📁 File Structure
 
 ```
 lawlm/
 ├── README.md                   # Main documentation
-├── requirements.txt            # Dependencies
-├── main.py                     # Main pipeline orchestrator to ingest, process, and upload to vector database
-├── config.py                   # Configuration management
-├── vector_processor.py         # Text extraction, deduplication logic for existing records, and vector processing
-├── legal_rag_query.py          # RAG system for querying the vector database in command line
-├── manage_qdrant.sh            # Qdrant Docker management script
-├── run_airflow.sh              # Airflow management script with Redis integration
-├── run_tests.py                # Test runner script for conda environment execution
-├── airflow/                    # Airflow orchestration infrastructure
-│   ├── dags/
-│   │   └── courtlistener_pipeline_dag.py  # Main DAG implementation
-│   ├── hooks/
-│   │   └── redis_rate_limit_hook.py       # Redis hook for distributed rate limiting
-│   ├── airflow.cfg             # Airflow configuration
-│   └── webserver_config.py     # Webserver configuration
-├── tests/                      # Comprehensive test suite
-│   ├── test_basic_functionality.py        # Core functionality and security tests
-│   ├── deduplication/                     # Document deduplication tests
-│   │   ├── test_deduplication.py
-│   │   ├── test_pagination_direct.py
-│   │   └── test_pagination_flow.py
-│   └── failure_scenario_simulator.py     # Robustness and failure testing
-├── docs/                       # Project documentation
-│   └── redis-schema.md          # Redis data schema and key patterns documentation
-├── data/                       # Working directory for pipeline files (created after main.py is run)
-├── qdrant_storage/             # Local Qdrant storage (created if Qdrant is run locally and after main.py is run)
+├── docker-compose.yml          # Docker orchestration configuration
+├── .env.template               # Environment variables template (API keys only)
+├── config.yml                  # Centralized configuration (chunking, models, ports, etc.)
+├── Dockerfile.base             # Shared base image with common dependencies
+├── requirements.txt            # Shared Python dependencies (PyTorch, transformers, etc.)
+├── data-ingestion/             # Data ingestion microservice
+│   ├── Dockerfile              # Container definition (extends base image)
+│   ├── requirements.txt        # Service-specific Python dependencies
+│   ├── data_extraction.py      # Main ingestion pipeline
+│   ├── opinion_utills.py       # Text processing utilities
+│   ├── opinion.py              # Opinion data model
+│   ├── chunk.py                # Chunking utilities
+│   └── qdrant_manager.py       # Qdrant database manager
+├── chatbot/                    # Web-based RAG query service
+│   ├── Dockerfile              # Container definition (extends base image)
+│   ├── requirements.txt        # Service-specific Python dependencies
+│   ├── app.py                  # Flask REST API
+│   └── static/
+│       └── index.html          # Web interface for legal search
+├── tests/                      # Test suite
+│   └── test_duplicates.py      # Tests for duplicate detection and ingestion
+└── qdrant_storage/             # Local Qdrant data (auto-created by Docker)
 ```
 
 ## Quick Start
 
 ### Prerequisites
 
-1. **Python 3.11** with pip (preferrably in an isolated conda environment)
+1. **Docker** and **Docker Compose** ([install Docker](https://docs.docker.com/get-docker/))
 2. **CourtListener API key** ([get one here](https://www.courtlistener.com/api/))
-3. **Docker** (for local Qdrant instance and data ingestion pipeline)
-<!-- 4. **Qdrant API** (if using cloud deployment, otherwise will save locally) -->
+3. **OpenAI API key** (optional - only needed for AI-generated summaries via chatbot interface) ([get one here](https://platform.openai.com/api-keys))
 
 ### Installation
 
-**Note**: If you're not using the Docker implementation, ensure you use a package manager (such as conda, or venv) when working with dependencies. You can install miniconda, an installer for Conda here: https://www.anaconda.com/docs/getting-started/miniconda/install
-
-
-<!-- ```bash
-# Create and activate a miniconda environment (ensure sure to use only v3.10)
-conda create -n lawlmenv -y python=3.10
-conda activate lawlmenv
-
+```bash
 # Clone repository
 git clone https://github.com/zain-altaf/lawlm.git
 cd lawlm
-
-# Install dependencies (Note: only the CPU torch version is supported at this time)
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
 
 # Set up environment variables
 cp .env.template .env
-# Edit .env with your API keys
-``` -->
+# Edit .env and add your CourtListener API key (required)
+# Optionally add your OpenAI API key for query summaries
+# QDRANT_URL is already set to http://localhost:6333 for local use
 
-```bash
-# Create and activate a miniconda environment (ensure sure to use only v3.10)
-conda create -n lawlmenv -y python=3.10
-conda activate lawlmenv
-
-# Clone repository
-git clone https://github.com/zain-altaf/lawlm.git
-cd lawlm
-
-# Use docker compose to boot up the Qdrant and data ingestion microservice
-docker compose up --build
+# Build and start all services (Qdrant, data ingestion, chatbot)
+docker compose up --build # the data ingestion service will, by default, process one page of the SCOTUS cases
 ```
 
-<!-- ### Running this Repository:
+This will start three services:
 
-#### Option 1: Airflow Orchestration (Recommended)
+- **Qdrant** (vector database) on ports 6333 and 6334
+- **Data ingestion** service that processes legal cases and stores them in Qdrant
+- **Chatbot** web interface on http://localhost:5000
 
-```bash
-# Start Airflow services and Redis (local)
-./run_airflow.sh                 # Start/ensure services are running
-./manage_qdrant.sh start         # If you're using local qdrant
+### Using the Application
 
-# Reset Airflow services, reset Redis and delete Database
-./run_airflow.sh --reset
+Once all services are running, you can access the web interface:
 
-# Stop Airflow services and Redis (database remains)
-./run_airflow.sh --stop
+- Navigate to http://localhost:5000 in your browser
+- Enter your legal question in the search box
+- View AI-generated summaries with source cases and relevant passages
+- Click "View Full Case" to access original PDF documents
 
-# Start Airflow services and Redis (cloud)
-QDRANT_URL: Cluster URL (e.g., https://your-cluster-id.us-east-1-0.aws.cloud.qdrant.io:6333)
-QDRANT_API_KEY: Cloud API key
-QDRANT_CLUSTER_NAME: Cluster name
-USE_CLOUD: true
+3. **Stopping Services**
 
-# run airflow
-./run_airflow.sh
+   ```bash
+   # Stop all services
+   docker compose down
 
-# Access Airflow UI
-# Navigate to http://localhost:8080 (admin/admin)
-```
+   # Stop and remove all data (including vector database)
+   docker compose down -v
+   ```
 
-#### Option 2: Manual Execution
+### Configuration
 
-```bash
-# Enable qdrant usage locally via Docker
-./manage_qdrant.sh start # Starts local instance
-```
+The application can be customized via two files:
 
-```bash
-# Run complete pipeline (NOTE: schema for scotus works. Not tested for other courts at this time)
-python main.py --court scotus --num-dockets 5
+1. **[.env](.env)** - Environment variables (sensitive data only):
+   - `CASELAW_API_KEY`: CourtListener API key (required)
+   - `QDRANT_URL`: Qdrant database URL (default: http://qdrant:6333 for Docker)
+   - `OPENAI_API_KEY`: OpenAI API key for summaries (optional)
 
-# Check pipeline status (including key configurations)
-python main.py --status
-```
+2. **[config.yml](config.yml)** - Application settings (non-sensitive):
+   - **Chunking**: `chunk_size_chars` (1536), `overlap_chars` (300), `min_chunk_size_chars` (400)
+   - **Vectorization**: `embedding_model` (BAAI/bge-small-en-v1.5), `vector_size` (384)
+   - **Qdrant**: `collection_name` (caselaw-chunks-scotus)
+   - **API**: `court` (scotus), `request_delay` (0.5s), `max_retries` (3)
+   - **Services**: Ports for data-ingestion (5001) and chatbot (5000)
+   - **RAG**: `openai_model` (gpt-4o-mini), `max_results` (3), `default_score_threshold` (0.4)
 
-##### Useful qdrant docker commands
-```bash
-# Other useful ./manage_qdrant.sh commands
-./manage_qdrant.sh stop # Stops the local instance
+### Docker Architecture
 
-./manage_qdrant.sh restart # Restarts local instance
+The project uses an **optimized multi-stage Docker build** to minimize storage usage:
 
-./manage_qdrant.sh status # Checks on Docker status and runs health check
+**Shared Base Image** ([Dockerfile.base](Dockerfile.base)):
 
-./manage_qdrant.sh logs # Displays the logs from the container. Press Ctrl + C to exit
+- Contains all common dependencies (PyTorch, transformers, qdrant-client, etc.)
+- Built once and shared by both services
+- Size: ~5.86GB
 
-./manage_qdrant.sh clean # Deletes all data from /qdrant_storage
+**Service-Specific Images**:
 
-./manage_qdrant.sh help # Displays the list of commands and helpful information
-```
+- `data-ingestion`: Base + service-specific deps (~40MB)
+- `chatbot`: Base + service-specific deps (~10MB)
 
-#### Using Qdrant cloud
+**Storage Savings**: ~50% reduction compared to separate builds (5.91GB vs 11.77GB)
 
-Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME and make sure you set USE_CLOUD=true. This will ensure the switch from local to cloud upload of text chunks. -->
-
-<!-- ##### Running legal_rag_query.py
-
-Prerequisites: 
-1. Ensure you have a working OPENAI_API_KEY in .env.
-2. Ensure you have a working QDRANT_API_KEY, QDRANT_URL and QDRANT_CLUSTER_NAME. Make sure USE_CLOUD=true 
-3. Ensure there are at least 5-10 dockets in Qdrant cloud for better semantic search prior to querying OPEN AI.  -->
-
-<!-- ```bash
-# Query the vector database
-python legal_rag_query.py --query "Can you tell me about the case Noem v. Vasquez Perdomo"
-``` -->
+The base image is automatically built first via `docker compose build`, and both services extend it. Docker's layer caching ensures the base layers are shared on disk.
 
 ## 🔄 Open Tasks / TODO
 

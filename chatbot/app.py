@@ -8,17 +8,29 @@ Combines semantic (dense) and keyword (BM25) search with OpenAI for summaries.
 
 import logging
 import os
+import yaml
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 from openai import OpenAI
 from qdrant_client import QdrantClient, models
 from sentence_transformers import SentenceTransformer
+import requests
+import PyPDF2
+import io
 
 load_dotenv()
+
+# Load config from project root (works both locally and in Docker)
+config_path = os.path.join(os.path.dirname(__file__), '..', 'config.yml')
+if not os.path.exists(config_path):
+    # Fallback for Docker: config is mounted at /app/config.yml
+    config_path = '/app/config.yml'
+with open(config_path, 'r') as f:
+    config = yaml.safe_load(f)
 
 # Set up logging
 logging.basicConfig(
@@ -31,13 +43,13 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Configuration from environment
+# Configuration from environment and config file
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "caselaw-chunks-scotus")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-MAX_RESULTS = int(os.getenv("MAX_RESULTS", "3"))
-PORT = int(os.getenv("PORT", "5000"))
+COLLECTION_NAME = config['qdrant']['collection_name']
+EMBEDDING_MODEL = config['vectorization']['embedding_model']
+OPENAI_MODEL = config['rag']['openai_model']
+MAX_RESULTS = config['rag']['max_results']
+PORT = config['services']['chatbot']['port']
 
 # Initialize clients
 logger.info(f"Initializing chatbot service...")
@@ -114,6 +126,12 @@ class LegalRAGService:
         Returns:
             List of search results with scores and payloads
         """
+        # Use defaults from config if not provided
+        if limit is None:
+            limit = config['rag']['max_results']
+        if score_threshold is None:
+            score_threshold = config['rag']['default_score_threshold']
+
         logger.info(f"Hybrid search: '{query}' (limit={limit}, threshold={score_threshold})")
 
         try:
@@ -123,6 +141,9 @@ class LegalRAGService:
             # Create dense vector for the query
             query_vector = self.embedder.encode(enhanced_query).tolist()
 
+            # Get RRF prefetch multiplier from config
+            rrf_multiplier = config['rag']['rrf_prefetch_multiplier']
+
             # Perform hybrid search with RRF using prefetch
             search_result = self.qdrant_client.query_points(
                 collection_name=self.collection_name,
@@ -131,7 +152,7 @@ class LegalRAGService:
                     models.Prefetch(
                         query=query_vector,
                         using="bge-small",
-                        limit=(5 * limit),  # Fetch more for better fusion
+                        limit=(rrf_multiplier * limit),  # Fetch more for better fusion
                     ),
                     # Sparse vector search (keyword/BM25)
                     models.Prefetch(
@@ -140,7 +161,7 @@ class LegalRAGService:
                             model="Qdrant/bm25",
                         ),
                         using="bm25",
-                        limit=(5 * limit),
+                        limit=(rrf_multiplier * limit),
                     ),
                 ],
                 # Use RRF to combine results
@@ -261,7 +282,7 @@ Please provide a concise 150-word summary that answers the query based on these 
     def query(
         self,
         question: str,
-        score_threshold: float = 0.4,
+        score_threshold: float = None,
         max_results: Optional[int] = None
     ) -> Dict[str, Any]:
         """
@@ -269,14 +290,21 @@ Please provide a concise 150-word summary that answers the query based on these 
 
         Args:
             question: User's legal question
-            score_threshold: Minimum relevance score
-            max_results: Maximum number of results (uses default if None)
+            score_threshold: Minimum relevance score (uses config default if None)
+            max_results: Maximum number of results (uses config default if None)
 
         Returns:
             Dictionary with summary, sources, and metadata
         """
         start_time = datetime.now()
-        limit = max_results if max_results is not None else self.max_results
+
+        # Use config defaults if not provided
+        if max_results is None:
+            max_results = config['rag']['max_results']
+        if score_threshold is None:
+            score_threshold = config['rag']['default_score_threshold']
+
+        limit = max_results
 
         # Step 1: Search relevant documents
         try:
@@ -380,7 +408,7 @@ def health():
 @app.route('/query', methods=['POST'])
 def query_endpoint():
     """
-    Query endpoint for legal RAG.
+    Query endpoint for legal RAG - now just returns search results without summary.
 
     Request body:
     {
@@ -391,11 +419,10 @@ def query_endpoint():
 
     Response:
     {
-        "question": "...",
-        "summary": "...",
-        "sources": [...],
+        "query": "...",
+        "results": [...],
         "search_type": "hybrid_rrf",
-        "processing_time": 1.23,
+        "processing_time": 0.45,
         "documents_found": 3
     }
     """
@@ -408,18 +435,27 @@ def query_endpoint():
             }), 400
 
         question = data['question']
-        score_threshold = data.get('score_threshold', 0.4)
+        score_threshold = data.get('score_threshold', None)
         max_results = data.get('max_results', None)
 
         logger.info(f"Received query: '{question}'")
 
-        result = rag_service.query(
-            question=question,
-            score_threshold=score_threshold,
-            max_results=max_results
+        # Use hybrid_search directly instead of full RAG query
+        start_time = datetime.now()
+        results = rag_service.hybrid_search(
+            query=question,
+            limit=max_results,
+            score_threshold=score_threshold
         )
+        processing_time = (datetime.now() - start_time).total_seconds()
 
-        return jsonify(result), 200
+        return jsonify({
+            "query": question,
+            "results": results,
+            "search_type": "hybrid_rrf",
+            "processing_time": processing_time,
+            "documents_found": len(results)
+        }), 200
 
     except Exception as e:
         logger.error(f"Query endpoint error: {e}")
@@ -458,8 +494,8 @@ def search_endpoint():
             }), 400
 
         query = data['query']
-        limit = data.get('limit', 3)
-        score_threshold = data.get('score_threshold', 0.4)
+        limit = data.get('limit', None)
+        score_threshold = data.get('score_threshold', None)
 
         logger.info(f"Received search: '{query}'")
 
@@ -502,6 +538,182 @@ def collection_info():
 
     except Exception as e:
         logger.error(f"Collection info error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+@app.route('/case/fetch', methods=['POST'])
+def fetch_case():
+    """
+    Fetch full case text from download_url.
+
+    Request body:
+    {
+        "download_url": "https://www.supremecourt.gov/opinions/...",
+        "case_name": "Brown v. Board of Education",
+        "chunk_text": "text from the chunk for context"
+    }
+
+    Response:
+    {
+        "case_name": "...",
+        "full_text": "...",
+        "chunk_text": "...",
+        "success": true
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'download_url' not in data:
+            return jsonify({
+                "error": "Missing 'download_url' field in request body"
+            }), 400
+
+        download_url = data['download_url']
+        case_name = data.get('case_name', 'Unknown Case')
+        chunk_text = data.get('chunk_text', '')
+
+        logger.info(f"Fetching case from: {download_url}")
+
+        # Fetch the PDF
+        response = requests.get(download_url, timeout=30)
+        response.raise_for_status()
+
+        # Extract text from PDF
+        pdf_file = io.BytesIO(response.content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+
+        full_text = ""
+        for page in pdf_reader.pages:
+            full_text += page.extract_text() + "\n"
+
+        logger.info(f"Successfully extracted {len(full_text)} characters from PDF")
+
+        return jsonify({
+            "case_name": case_name,
+            "full_text": full_text,
+            "chunk_text": chunk_text,
+            "success": True,
+            "text_length": len(full_text)
+        }), 200
+
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch PDF: {e}")
+        return jsonify({
+            "error": f"Failed to fetch PDF: {str(e)}",
+            "success": False
+        }), 500
+    except Exception as e:
+        logger.error(f"Case fetch error: {e}")
+        return jsonify({
+            "error": str(e),
+            "success": False
+        }), 500
+
+
+@app.route('/case/summarize-stream', methods=['POST'])
+def summarize_case_stream():
+    """
+    Stream GPT summary of full case text character by character using SSE.
+
+    Request body:
+    {
+        "case_name": "Brown v. Board of Education",
+        "full_text": "...",
+        "chunk_text": "...",
+        "user_question": "What is the holding in this case?"
+    }
+
+    Response: Server-Sent Events stream
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'full_text' not in data:
+            return jsonify({
+                "error": "Missing 'full_text' field in request body"
+            }), 400
+
+        case_name = data.get('case_name', 'Unknown Case')
+        full_text = data['full_text']
+        chunk_text = data.get('chunk_text', '')
+        user_question = data.get('user_question', '')
+
+        if not OPENAI_AVAILABLE or not openai_client:
+            return jsonify({
+                "error": "OpenAI API not available. Please set OPENAI_API_KEY."
+            }), 503
+
+        logger.info(f"Streaming summary for case: {case_name}")
+
+        # Truncate full_text if too long (GPT token limits)
+        max_chars = 12000  # Roughly 3000 tokens
+        if len(full_text) > max_chars:
+            full_text = full_text[:max_chars] + "\n\n[Document truncated due to length...]"
+
+        system_prompt = """You are a legal research assistant. Provide a comprehensive summary of the legal case that answers the user's question.
+
+Guidelines:
+- Start with the case name and basic information (court, date, parties)
+- Explain the key facts of the case
+- Describe the legal issues presented
+- Explain the court's holding and reasoning
+- Mention any important concurrences or dissents
+- Keep the summary well-structured and professional
+- Aim for 300-500 words for a complete analysis"""
+
+        user_prompt = f"""Case Name: {case_name}
+
+User's Question: {user_question}
+
+Relevant Passage from Search:
+{chunk_text[:500]}
+
+Full Case Text:
+{full_text}
+
+Please provide a comprehensive summary that answers the user's question based on this case."""
+
+        def generate():
+            try:
+                # Stream from OpenAI
+                stream = openai_client.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    max_tokens=800,
+                    temperature=0.3,
+                    stream=True
+                )
+
+                for chunk in stream:
+                    if chunk.choices[0].delta.content:
+                        content = chunk.choices[0].delta.content
+                        # Send as SSE format
+                        yield f"data: {content}\n\n"
+
+                # Send completion signal
+                yield "data: [DONE]\n\n"
+
+            except Exception as e:
+                logger.error(f"Streaming error: {e}")
+                yield f"data: [ERROR] {str(e)}\n\n"
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no'
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Summarize stream error: {e}")
         return jsonify({
             "error": str(e)
         }), 500

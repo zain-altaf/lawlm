@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Legal RAG Search</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -15,9 +16,6 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             padding: 20px;
         }
 
@@ -25,8 +23,8 @@
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            max-width: 900px;
-            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
             padding: 40px;
         }
 
@@ -90,7 +88,7 @@
             color: white;
         }
 
-        .btn-search:hover {
+        .btn-search:hover:not(:disabled) {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
         }
@@ -98,7 +96,6 @@
         .btn-search:disabled {
             opacity: 0.6;
             cursor: not-allowed;
-            transform: none;
         }
 
         .btn-clear {
@@ -137,83 +134,6 @@
             100% { transform: rotate(360deg); }
         }
 
-        .results {
-            display: none;
-        }
-
-        .results.active {
-            display: block;
-        }
-
-        .summary-box {
-            background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%);
-            border-left: 4px solid #667eea;
-            padding: 25px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-        }
-
-        .summary-box h2 {
-            color: #2d3748;
-            margin-bottom: 15px;
-            font-size: 1.5rem;
-        }
-
-        .summary-text {
-            color: #4a5568;
-            line-height: 1.8;
-            font-size: 1.05rem;
-        }
-
-        .sources {
-            background: white;
-            border: 2px solid #e2e8f0;
-            border-radius: 10px;
-            padding: 25px;
-        }
-
-        .sources h3 {
-            color: #2d3748;
-            margin-bottom: 20px;
-            font-size: 1.3rem;
-        }
-
-        .source-card {
-            background: #f7fafc;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-            border-left: 3px solid #667eea;
-        }
-
-        .source-card:last-child {
-            margin-bottom: 0;
-        }
-
-        .case-name {
-            font-weight: 700;
-            color: #2d3748;
-            font-size: 1.1rem;
-            margin-bottom: 8px;
-        }
-
-        .case-details {
-            color: #718096;
-            font-size: 0.95rem;
-            margin-bottom: 5px;
-        }
-
-        .relevance-score {
-            display: inline-block;
-            background: #667eea;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-top: 8px;
-        }
-
         .error {
             display: none;
             background: #fed7d7;
@@ -226,6 +146,231 @@
 
         .error.active {
             display: block;
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results.active {
+            display: block;
+        }
+
+        .case-cards {
+            display: grid;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .case-card {
+            background: #f7fafc;
+            padding: 25px;
+            border-radius: 12px;
+            border-left: 4px solid #667eea;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .case-card:hover {
+            background: #edf2f7;
+            transform: translateX(5px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
+        }
+
+        .case-card.selected {
+            background: #e6fffa;
+            border-left-color: #38b2ac;
+        }
+
+        .case-name {
+            font-weight: 700;
+            color: #2d3748;
+            font-size: 1.2rem;
+            margin-bottom: 12px;
+        }
+
+        .case-details {
+            color: #718096;
+            font-size: 0.95rem;
+            margin-bottom: 12px;
+        }
+
+        .case-snippet {
+            color: #4a5568;
+            font-size: 0.9rem;
+            font-style: italic;
+            line-height: 1.6;
+            margin: 12px 0;
+            padding: 12px;
+            background: white;
+            border-radius: 6px;
+            max-height: 100px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .case-snippet::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 30px;
+            background: linear-gradient(to bottom, transparent, white);
+        }
+
+        .relevance-score {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .select-hint {
+            color: #667eea;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-top: 12px;
+        }
+
+        .summary-container {
+            display: none;
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 30px;
+            margin-top: 30px;
+        }
+
+        .summary-container.active {
+            display: block;
+        }
+
+        .summary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .summary-title {
+            color: #2d3748;
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+
+        .summary-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .close-summary, .download-summary {
+            background: #f7fafc;
+            border: 2px solid #e2e8f0;
+            color: #4a5568;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+        }
+
+        .download-summary {
+            background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+            color: white;
+            border-color: #38a169;
+        }
+
+        .close-summary:hover {
+            background: #edf2f7;
+        }
+
+        .download-summary:hover {
+            background: linear-gradient(135deg, #38a169 0%, #2f855a 100%);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(72, 187, 120, 0.3);
+        }
+
+        .summary-case-name {
+            color: #667eea;
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .summary-text {
+            color: #2d3748;
+            line-height: 1.8;
+            font-size: 1.05rem;
+            min-height: 50px;
+        }
+
+        .summary-text h1, .summary-text h2, .summary-text h3 {
+            color: #2d3748;
+            margin-top: 20px;
+            margin-bottom: 12px;
+            font-weight: 700;
+        }
+
+        .summary-text h1 {
+            font-size: 1.5rem;
+        }
+
+        .summary-text h2 {
+            font-size: 1.3rem;
+        }
+
+        .summary-text h3 {
+            font-size: 1.15rem;
+        }
+
+        .summary-text p {
+            margin-bottom: 12px;
+        }
+
+        .summary-text strong {
+            font-weight: 700;
+            color: #1a202c;
+        }
+
+        .summary-text em {
+            font-style: italic;
+        }
+
+        .summary-text .section-title {
+            display: block;
+            font-weight: 700;
+            color: #667eea;
+            font-size: 1.05rem;
+            margin-top: 16px;
+            margin-bottom: 8px;
+        }
+
+        .summary-text .section-content {
+            display: block;
+            margin-bottom: 12px;
+        }
+
+        .streaming-cursor {
+            display: inline-block;
+            width: 8px;
+            height: 20px;
+            background: #667eea;
+            margin-left: 2px;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 49% { opacity: 1; }
+            50%, 100% { opacity: 0; }
         }
 
         .meta-info {
@@ -249,110 +394,22 @@
             color: #4a5568;
         }
 
-        .chunk-text {
-            background: white;
-            border-left: 3px solid #a0aec0;
-            padding: 15px;
-            margin: 12px 0;
-            border-radius: 6px;
-            font-style: italic;
-            color: #2d3748;
-            line-height: 1.6;
-            position: relative;
-        }
-
-        .chunk-text::before {
-            content: '"';
-            position: absolute;
-            left: 8px;
-            top: 8px;
-            font-size: 2rem;
-            color: #cbd5e0;
-            font-family: Georgia, serif;
-        }
-
-        .chunk-label {
-            font-size: 0.85rem;
-            color: #718096;
-            font-weight: 600;
-            margin-bottom: 8px;
-            font-style: normal;
-        }
-
-        .chunk-content {
-            padding-left: 20px;
-            max-height: 150px;
-            overflow-y: auto;
-        }
-
-        .chunk-content::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        .chunk-content::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 3px;
-        }
-
-        .chunk-content::-webkit-scrollbar-thumb {
-            background: #cbd5e0;
-            border-radius: 3px;
-        }
-
-        .chunk-content::-webkit-scrollbar-thumb:hover {
-            background: #a0aec0;
-        }
-
-        .download-btn {
-            display: inline-block;
-            background: #48bb78;
-            color: white;
-            padding: 8px 16px;
-            border-radius: 6px;
-            text-decoration: none;
-            font-size: 0.9rem;
-            font-weight: 600;
-            margin-top: 10px;
-            transition: all 0.3s ease;
-            border: none;
-            cursor: pointer;
-        }
-
-        .download-btn:hover {
-            background: #38a169;
-            transform: translateY(-1px);
-            box-shadow: 0 4px 8px rgba(72, 187, 120, 0.3);
-        }
-
-        .download-btn::before {
-            content: '📄 ';
-        }
-
         .info-notice {
             background: #ebf8ff;
             border-left: 4px solid #4299e1;
-            padding: 12px 16px;
+            padding: 15px 20px;
             border-radius: 8px;
             margin-bottom: 20px;
-            font-size: 0.9rem;
+            font-size: 0.95rem;
             color: #2c5282;
             line-height: 1.6;
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-        }
-
-        .info-notice::before {
-            content: 'ℹ️';
-            font-size: 1.2rem;
-            flex-shrink: 0;
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🔍 Legal RAG Search</h1>
-        <p class="subtitle">Search through legal cases using AI-powered hybrid search</p>
+        <p class="subtitle">Search through legal cases and get AI-powered summaries</p>
 
         <div class="search-box">
             <label for="query">Enter your legal question:</label>
@@ -365,7 +422,7 @@
         </div>
 
         <div class="button-group">
-            <button class="btn-search" onclick="search()">Search & Summarize</button>
+            <button class="btn-search" onclick="search()">Search Cases</button>
             <button class="btn-clear" onclick="clearResults()">Clear</button>
         </div>
 
@@ -373,34 +430,37 @@
 
         <div class="loading" id="loading">
             <div class="spinner"></div>
-            <p>Searching legal database and generating summary...</p>
+            <p id="loadingText">Searching legal database...</p>
         </div>
 
         <div class="results" id="results">
-            <div class="summary-box">
-                <h2>Summary</h2>
-                <div class="summary-text" id="summary"></div>
+            <div class="info-notice">
+                Click on any case below to fetch the full document and generate a comprehensive AI summary.
             </div>
-
-            <div class="sources">
-                <h3>Source Cases</h3>
-                <div class="info-notice">
-                    Information may not be completely accurate as not all case documents have been processed.
-                    Results are limited to Supreme Court of the United States cases currently in the database.
-                </div>
-                <div id="sources"></div>
-            </div>
+            <div class="case-cards" id="caseCards"></div>
 
             <div class="meta-info">
                 <div class="meta-item">
-                    <strong>Documents:</strong>
+                    <strong>Cases Found:</strong>
                     <span id="docCount">0</span>
                 </div>
                 <div class="meta-item">
-                    <strong>Processing Time:</strong>
+                    <strong>Search Time:</strong>
                     <span id="procTime">0s</span>
                 </div>
             </div>
+        </div>
+
+        <div class="summary-container" id="summaryContainer">
+            <div class="summary-header">
+                <div class="summary-title">📄 Case Summary</div>
+                <div class="summary-actions">
+                    <button class="download-summary" onclick="downloadSummaryPDF()">📥 Download PDF</button>
+                    <button class="close-summary" onclick="closeSummary()">✕ Close</button>
+                </div>
+            </div>
+            <div class="summary-case-name" id="summaryCaseName"></div>
+            <div class="summary-text" id="summaryText"></div>
         </div>
     </div>
 
@@ -408,8 +468,85 @@
         const queryInput = document.getElementById('query');
         const searchBtn = document.querySelector('.btn-search');
         const loading = document.getElementById('loading');
+        const loadingText = document.getElementById('loadingText');
         const results = document.getElementById('results');
         const error = document.getElementById('error');
+        const caseCards = document.getElementById('caseCards');
+        const summaryContainer = document.getElementById('summaryContainer');
+        const summaryText = document.getElementById('summaryText');
+        const summaryCaseName = document.getElementById('summaryCaseName');
+
+        let currentQuery = '';
+        let searchResults = [];
+
+        // Simple Markdown to HTML converter
+        function parseMarkdown(text) {
+            // Convert headings (### Heading)
+            text = text.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+            text = text.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+            text = text.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+
+            // Convert bold (**text** or __text__)
+            text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            text = text.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+
+            // Convert italic (*text* or _text_)
+            text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            text = text.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+            // Split into lines and process for section patterns
+            let lines = text.split('\n');
+            let result = [];
+            let i = 0;
+
+            while (i < lines.length) {
+                let line = lines[i].trim();
+
+                // Check if this line is a "Label:" pattern (subtitle)
+                const labelMatch = line.match(/^<strong>([^<]+)<\/strong>:\s*(.*)$/);
+
+                if (labelMatch) {
+                    const label = labelMatch[1];
+                    let content = labelMatch[2].trim();
+
+                    // Collect multi-line content until we hit a blank line or another label
+                    i++;
+                    while (i < lines.length) {
+                        const nextLine = lines[i].trim();
+                        if (!nextLine) {
+                            break; // Blank line ends the section
+                        }
+                        if (nextLine.match(/^<strong>([^<]+)<\/strong>:/)) {
+                            break; // Next label starts
+                        }
+                        if (nextLine.match(/^<h[1-3]>/)) {
+                            break; // Heading starts
+                        }
+                        content += ' ' + nextLine;
+                        i++;
+                    }
+
+                    result.push(`<div class="section-title">${label}:</div><div class="section-content">${content}</div>`);
+                } else if (line.startsWith('<h')) {
+                    // Heading
+                    result.push(line);
+                    i++;
+                } else if (line) {
+                    // Regular content - collect until blank line
+                    let para = line;
+                    i++;
+                    while (i < lines.length && lines[i].trim() && !lines[i].trim().startsWith('<h') && !lines[i].trim().match(/^<strong>([^<]+)<\/strong>:/)) {
+                        para += ' ' + lines[i].trim();
+                        i++;
+                    }
+                    result.push(`<p>${para}</p>`);
+                } else {
+                    i++;
+                }
+            }
+
+            return result.join('');
+        }
 
         // Allow Enter key to trigger search
         queryInput.addEventListener('keypress', (e) => {
@@ -426,10 +563,14 @@
                 return;
             }
 
+            currentQuery = query;
+
             // Hide previous results/errors
             results.classList.remove('active');
             error.classList.remove('active');
+            summaryContainer.classList.remove('active');
             loading.classList.add('active');
+            loadingText.textContent = 'Searching legal database...';
             searchBtn.disabled = true;
 
             try {
@@ -440,7 +581,7 @@
                     },
                     body: JSON.stringify({
                         question: query,
-                        max_results: 3
+                        max_results: 5
                     })
                 });
 
@@ -450,7 +591,8 @@
                     throw new Error(data.error || 'Search failed');
                 }
 
-                displayResults(data);
+                searchResults = data.results || [];
+                displayCaseResults(data);
             } catch (err) {
                 showError(err.message);
             } finally {
@@ -459,55 +601,44 @@
             }
         }
 
-        function displayResults(data) {
-            // Display summary
-            document.getElementById('summary').textContent = data.summary;
+        function displayCaseResults(data) {
+            // Clear previous results
+            caseCards.innerHTML = '';
 
-            // Display sources
-            const sourcesDiv = document.getElementById('sources');
-            sourcesDiv.innerHTML = '';
-
-            if (data.sources && data.sources.length > 0) {
-                data.sources.forEach(source => {
-                    const card = document.createElement('div');
-                    card.className = 'source-card';
-
-                    // Truncate text if too long for preview
-                    const chunkText = source.text || '';
-                    const truncatedText = chunkText.length > 400
-                        ? chunkText.substring(0, 400) + '...'
-                        : chunkText;
-
-                    card.innerHTML = `
-                        <div class="case-name">${source.case_name}</div>
-                        <div class="case-details">
-                            <strong>Court:</strong> ${source.court.toUpperCase()} |
-                            <strong>Date:</strong> ${source.date_filed} |
-                            <strong>Type:</strong> ${source.opinion_type}
-                        </div>
-                        <div class="chunk-text">
-                            <div class="chunk-label">Relevant passage found:</div>
-                            <div class="chunk-content">${truncatedText}</div>
-                        </div>
-                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                            <span class="relevance-score">
-                                Relevance: ${(source.relevance_score * 100).toFixed(1)}%
-                            </span>
-                            ${source.download_url ? `
-                                <a href="${source.download_url}"
-                                   target="_blank"
-                                   rel="noopener noreferrer"
-                                   class="download-btn">
-                                    View Full Case
-                                </a>
-                            ` : ''}
-                        </div>
-                    `;
-                    sourcesDiv.appendChild(card);
-                });
-            } else {
-                sourcesDiv.innerHTML = '<p style="color: #718096;">No sources found</p>';
+            if (!data.results || data.results.length === 0) {
+                caseCards.innerHTML = '<p style="color: #718096; text-align: center; padding: 40px;">No cases found. Try a different query.</p>';
+                results.classList.add('active');
+                return;
             }
+
+            // Create case cards
+            data.results.forEach((result, index) => {
+                const payload = result.payload;
+                const card = document.createElement('div');
+                card.className = 'case-card';
+                card.onclick = () => selectCase(index);
+
+                const snippet = payload.text || '';
+                const truncatedSnippet = snippet.length > 200 ? snippet.substring(0, 200) + '...' : snippet;
+
+                card.innerHTML = `
+                    <div class="case-name">${payload.case_name || 'Unknown Case'}</div>
+                    <div class="case-details">
+                        <strong>Court:</strong> ${(payload.court_id || 'Unknown').toUpperCase()} |
+                        <strong>Date:</strong> ${payload.date_filed || 'Unknown'} |
+                        <strong>Type:</strong> ${payload.opinion_type || 'Unknown'}
+                    </div>
+                    <div class="case-snippet">${truncatedSnippet}</div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span class="relevance-score">
+                            Relevance: ${(result.score * 100).toFixed(1)}%
+                        </span>
+                        <span class="select-hint">Click to view full summary →</span>
+                    </div>
+                `;
+
+                caseCards.appendChild(card);
+            });
 
             // Display metadata
             document.getElementById('docCount').textContent = data.documents_found || 0;
@@ -516,6 +647,123 @@
 
             // Show results
             results.classList.add('active');
+        }
+
+        async function selectCase(index) {
+            const result = searchResults[index];
+            const payload = result.payload;
+
+            // Highlight selected card
+            document.querySelectorAll('.case-card').forEach((card, i) => {
+                card.classList.toggle('selected', i === index);
+            });
+
+            // Show loading
+            loading.classList.add('active');
+            loadingText.textContent = 'Fetching full case document...';
+
+            try {
+                // Step 1: Fetch full case text
+                const fetchResponse = await fetch('/case/fetch', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        download_url: payload.download_url,
+                        case_name: payload.case_name,
+                        chunk_text: payload.text
+                    })
+                });
+
+                const caseData = await fetchResponse.json();
+
+                if (!fetchResponse.ok) {
+                    throw new Error(caseData.error || 'Failed to fetch case');
+                }
+
+                loading.classList.remove('active');
+
+                // Show summary container
+                summaryContainer.classList.add('active');
+                summaryCaseName.textContent = caseData.case_name;
+                summaryText.innerHTML = '<span class="streaming-cursor"></span>';
+
+                // Scroll to summary
+                summaryContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                // Step 2: Stream the summary
+                await streamSummary(caseData);
+
+            } catch (err) {
+                loading.classList.remove('active');
+                showError(err.message);
+            }
+        }
+
+        async function streamSummary(caseData) {
+            const response = await fetch('/case/summarize-stream', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    case_name: caseData.case_name,
+                    full_text: caseData.full_text,
+                    chunk_text: caseData.chunk_text,
+                    user_question: currentQuery
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to generate summary');
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let summaryContent = '';
+
+            summaryText.innerHTML = '<span class="streaming-cursor"></span>';
+
+            while (true) {
+                const { done, value } = await reader.read();
+
+                if (done) break;
+
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n');
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const data = line.slice(6);
+
+                        if (data === '[DONE]') {
+                            // Parse final markdown and remove cursor
+                            summaryText.innerHTML = parseMarkdown(summaryContent);
+                            return;
+                        } else if (data.startsWith('[ERROR]')) {
+                            throw new Error(data.slice(8));
+                        } else {
+                            // Append character by character
+                            summaryContent += data;
+
+                            // Parse markdown for display while streaming
+                            const parsedContent = parseMarkdown(summaryContent);
+                            summaryText.innerHTML = parsedContent + '<span class="streaming-cursor"></span>';
+
+                            // Auto-scroll to bottom
+                            summaryContainer.scrollTop = summaryContainer.scrollHeight;
+                        }
+                    }
+                }
+            }
+        }
+
+        function closeSummary() {
+            summaryContainer.classList.remove('active');
+            document.querySelectorAll('.case-card').forEach(card => {
+                card.classList.remove('selected');
+            });
         }
 
         function showError(message) {
@@ -527,7 +775,159 @@
             queryInput.value = '';
             results.classList.remove('active');
             error.classList.remove('active');
+            summaryContainer.classList.remove('active');
+            caseCards.innerHTML = '';
+            searchResults = [];
+            currentQuery = '';
             queryInput.focus();
+        }
+
+        function downloadSummaryPDF() {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            const caseName = summaryCaseName.textContent;
+            const summaryHtml = summaryText.innerHTML;
+
+            // Extract plain text from HTML (removing tags and cursor)
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = summaryHtml;
+
+            // Remove streaming cursor if present
+            const cursor = tempDiv.querySelector('.streaming-cursor');
+            if (cursor) cursor.remove();
+
+            // Get formatted text
+            let yPosition = 20;
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const margin = 20;
+            const maxWidth = pageWidth - (2 * margin);
+
+            // Add title
+            doc.setFontSize(18);
+            doc.setFont(undefined, 'bold');
+            doc.text('Legal Case Summary', margin, yPosition);
+            yPosition += 10;
+
+            // Add case name
+            doc.setFontSize(14);
+            doc.setTextColor(102, 126, 234); // Purple color
+            const caseNameLines = doc.splitTextToSize(caseName, maxWidth);
+            doc.text(caseNameLines, margin, yPosition);
+            yPosition += (caseNameLines.length * 7) + 5;
+
+            // Add horizontal line
+            doc.setDrawColor(226, 232, 240);
+            doc.line(margin, yPosition, pageWidth - margin, yPosition);
+            yPosition += 10;
+
+            // Reset color
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(11);
+
+            // Process content sections
+            const sections = tempDiv.querySelectorAll('.section-title, .section-content, h1, h2, h3, p, strong');
+
+            // Track which elements we've already processed
+            const processed = new Set();
+
+            sections.forEach(element => {
+                // Skip if already processed
+                if (processed.has(element)) return;
+
+                // Check if we need a new page
+                if (yPosition > 270) {
+                    doc.addPage();
+                    yPosition = 20;
+                }
+
+                const text = element.textContent.trim();
+                if (!text) return;
+
+                // Section titles (purple and bold, on their own line)
+                if (element.classList.contains('section-title')) {
+                    doc.setFont(undefined, 'bold');
+                    doc.setFontSize(11);
+                    doc.setTextColor(102, 126, 234);
+                    const lines = doc.splitTextToSize(text, maxWidth);
+                    doc.text(lines, margin, yPosition);
+                    yPosition += (lines.length * 6) + 3;
+
+                    // Reset to normal for content
+                    doc.setTextColor(0, 0, 0);
+                    doc.setFont(undefined, 'normal');
+                    doc.setFontSize(11);
+
+                    processed.add(element);
+
+                    // Now process the next element if it's section-content
+                    const nextElement = element.nextElementSibling;
+                    if (nextElement && nextElement.classList.contains('section-content')) {
+                        const contentText = nextElement.textContent.trim();
+                        if (contentText) {
+                            const contentLines = doc.splitTextToSize(contentText, maxWidth);
+                            doc.text(contentLines, margin, yPosition);
+                            yPosition += (contentLines.length * 5) + 10;
+                            processed.add(nextElement);
+                        }
+                    }
+                }
+                // Section content (only if not already processed)
+                else if (element.classList.contains('section-content')) {
+                    if (!processed.has(element)) {
+                        doc.setFont(undefined, 'normal');
+                        doc.setFontSize(11);
+                        const lines = doc.splitTextToSize(text, maxWidth);
+                        doc.text(lines, margin, yPosition);
+                        yPosition += (lines.length * 5) + 8;
+                        processed.add(element);
+                    }
+                }
+                // Headings
+                else if (element.tagName && element.tagName.match(/^H[1-3]$/)) {
+                    doc.setFont(undefined, 'bold');
+                    doc.setFontSize(element.tagName === 'H1' ? 14 : element.tagName === 'H2' ? 13 : 12);
+                    const lines = doc.splitTextToSize(text, maxWidth);
+                    doc.text(lines, margin, yPosition);
+                    yPosition += (lines.length * 6) + 5;
+                    doc.setFont(undefined, 'normal');
+                    doc.setFontSize(11);
+                    processed.add(element);
+                }
+                // Paragraphs (unbold, normal text)
+                else if (element.tagName === 'P') {
+                    doc.setFont(undefined, 'normal');
+                    doc.setFontSize(11);
+                    const lines = doc.splitTextToSize(text, maxWidth);
+                    doc.text(lines, margin, yPosition);
+                    yPosition += (lines.length * 5) + 5;
+                    processed.add(element);
+                }
+            });
+
+            // Add footer
+            const pageCount = doc.internal.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(9);
+                doc.setTextColor(128, 128, 128);
+                doc.text(
+                    `Generated by Legal RAG Search - Page ${i} of ${pageCount}`,
+                    pageWidth / 2,
+                    doc.internal.pageSize.getHeight() - 10,
+                    { align: 'center' }
+                );
+            }
+
+            // Generate filename from case name
+            const filename = caseName
+                .replace(/[^a-z0-9]/gi, '_')
+                .replace(/_+/g, '_')
+                .toLowerCase()
+                .substring(0, 50) + '_summary.pdf';
+
+            // Download the PDF
+            doc.save(filename);
         }
     </script>
 </body>

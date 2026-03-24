@@ -51,3 +51,7 @@ data-ingestion/__pycache__/
 data-ingestion/output/*
 
 old_files/*
+
+.claude/*
+
+.github/*
