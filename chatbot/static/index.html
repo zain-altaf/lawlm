@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Legal RAG Search</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 900px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 2.5rem;
+        }
+
+        .subtitle {
+            color: #718096;
+            margin-bottom: 30px;
+            font-size: 1.1rem;
+        }
+
+        .search-box {
+            margin-bottom: 30px;
+        }
+
+        label {
+            display: block;
+            color: #4a5568;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 15px 20px;
+            font-size: 1rem;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            transition: all 0.3s ease;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        button {
+            flex: 1;
+            padding: 15px 30px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-search {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-search:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-search:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-clear {
+            background: #f7fafc;
+            color: #4a5568;
+            border: 2px solid #e2e8f0;
+        }
+
+        .btn-clear:hover {
+            background: #edf2f7;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #667eea;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .results {
+            display: none;
+        }
+
+        .results.active {
+            display: block;
+        }
+
+        .summary-box {
+            background: linear-gradient(135deg, #f7fafc 0%, #edf2f7 100%);
+            border-left: 4px solid #667eea;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+
+        .summary-box h2 {
+            color: #2d3748;
+            margin-bottom: 15px;
+            font-size: 1.5rem;
+        }
+
+        .summary-text {
+            color: #4a5568;
+            line-height: 1.8;
+            font-size: 1.05rem;
+        }
+
+        .sources {
+            background: white;
+            border: 2px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 25px;
+        }
+
+        .sources h3 {
+            color: #2d3748;
+            margin-bottom: 20px;
+            font-size: 1.3rem;
+        }
+
+        .source-card {
+            background: #f7fafc;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 3px solid #667eea;
+        }
+
+        .source-card:last-child {
+            margin-bottom: 0;
+        }
+
+        .case-name {
+            font-weight: 700;
+            color: #2d3748;
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+        }
+
+        .case-details {
+            color: #718096;
+            font-size: 0.95rem;
+            margin-bottom: 5px;
+        }
+
+        .relevance-score {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+
+        .error {
+            display: none;
+            background: #fed7d7;
+            border-left: 4px solid #fc8181;
+            padding: 20px;
+            border-radius: 10px;
+            color: #742a2a;
+            margin-bottom: 20px;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        .meta-info {
+            display: flex;
+            justify-content: space-between;
+            padding: 15px;
+            background: #edf2f7;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-size: 0.9rem;
+            color: #718096;
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .meta-item strong {
+            color: #4a5568;
+        }
+
+        .chunk-text {
+            background: white;
+            border-left: 3px solid #a0aec0;
+            padding: 15px;
+            margin: 12px 0;
+            border-radius: 6px;
+            font-style: italic;
+            color: #2d3748;
+            line-height: 1.6;
+            position: relative;
+        }
+
+        .chunk-text::before {
+            content: '"';
+            position: absolute;
+            left: 8px;
+            top: 8px;
+            font-size: 2rem;
+            color: #cbd5e0;
+            font-family: Georgia, serif;
+        }
+
+        .chunk-label {
+            font-size: 0.85rem;
+            color: #718096;
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-style: normal;
+        }
+
+        .chunk-content {
+            padding-left: 20px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+
+        .chunk-content::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chunk-content::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 3px;
+        }
+
+        .chunk-content::-webkit-scrollbar-thumb {
+            background: #cbd5e0;
+            border-radius: 3px;
+        }
+
+        .chunk-content::-webkit-scrollbar-thumb:hover {
+            background: #a0aec0;
+        }
+
+        .download-btn {
+            display: inline-block;
+            background: #48bb78;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-top: 10px;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+
+        .download-btn:hover {
+            background: #38a169;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(72, 187, 120, 0.3);
+        }
+
+        .download-btn::before {
+            content: '📄 ';
+        }
+
+        .info-notice {
+            background: #ebf8ff;
+            border-left: 4px solid #4299e1;
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+            color: #2c5282;
+            line-height: 1.6;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .info-notice::before {
+            content: 'ℹ️';
+            font-size: 1.2rem;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Legal RAG Search</h1>
+        <p class="subtitle">Search through legal cases using AI-powered hybrid search</p>
+
+        <div class="search-box">
+            <label for="query">Enter your legal question:</label>
+            <input
+                type="text"
+                id="query"
+                placeholder="e.g., What is the holding in Brown v. Board of Education?"
+                autocomplete="off"
+            >
+        </div>
+
+        <div class="button-group">
+            <button class="btn-search" onclick="search()">Search & Summarize</button>
+            <button class="btn-clear" onclick="clearResults()">Clear</button>
+        </div>
+
+        <div class="error" id="error"></div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>Searching legal database and generating summary...</p>
+        </div>
+
+        <div class="results" id="results">
+            <div class="summary-box">
+                <h2>Summary</h2>
+                <div class="summary-text" id="summary"></div>
+            </div>
+
+            <div class="sources">
+                <h3>Source Cases</h3>
+                <div class="info-notice">
+                    Information may not be completely accurate as not all case documents have been processed.
+                    Results are limited to Supreme Court of the United States cases currently in the database.
+                </div>
+                <div id="sources"></div>
+            </div>
+
+            <div class="meta-info">
+                <div class="meta-item">
+                    <strong>Documents:</strong>
+                    <span id="docCount">0</span>
+                </div>
+                <div class="meta-item">
+                    <strong>Processing Time:</strong>
+                    <span id="procTime">0s</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const queryInput = document.getElementById('query');
+        const searchBtn = document.querySelector('.btn-search');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        const error = document.getElementById('error');
+
+        // Allow Enter key to trigger search
+        queryInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                search();
+            }
+        });
+
+        async function search() {
+            const query = queryInput.value.trim();
+
+            if (!query) {
+                showError('Please enter a question');
+                return;
+            }
+
+            // Hide previous results/errors
+            results.classList.remove('active');
+            error.classList.remove('active');
+            loading.classList.add('active');
+            searchBtn.disabled = true;
+
+            try {
+                const response = await fetch('/query', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        question: query,
+                        max_results: 3
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Search failed');
+                }
+
+                displayResults(data);
+            } catch (err) {
+                showError(err.message);
+            } finally {
+                loading.classList.remove('active');
+                searchBtn.disabled = false;
+            }
+        }
+
+        function displayResults(data) {
+            // Display summary
+            document.getElementById('summary').textContent = data.summary;
+
+            // Display sources
+            const sourcesDiv = document.getElementById('sources');
+            sourcesDiv.innerHTML = '';
+
+            if (data.sources && data.sources.length > 0) {
+                data.sources.forEach(source => {
+                    const card = document.createElement('div');
+                    card.className = 'source-card';
+
+                    // Truncate text if too long for preview
+                    const chunkText = source.text || '';
+                    const truncatedText = chunkText.length > 400
+                        ? chunkText.substring(0, 400) + '...'
+                        : chunkText;
+
+                    card.innerHTML = `
+                        <div class="case-name">${source.case_name}</div>
+                        <div class="case-details">
+                            <strong>Court:</strong> ${source.court.toUpperCase()} |
+                            <strong>Date:</strong> ${source.date_filed} |
+                            <strong>Type:</strong> ${source.opinion_type}
+                        </div>
+                        <div class="chunk-text">
+                            <div class="chunk-label">Relevant passage found:</div>
+                            <div class="chunk-content">${truncatedText}</div>
+                        </div>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <span class="relevance-score">
+                                Relevance: ${(source.relevance_score * 100).toFixed(1)}%
+                            </span>
+                            ${source.download_url ? `
+                                <a href="${source.download_url}"
+                                   target="_blank"
+                                   rel="noopener noreferrer"
+                                   class="download-btn">
+                                    View Full Case
+                                </a>
+                            ` : ''}
+                        </div>
+                    `;
+                    sourcesDiv.appendChild(card);
+                });
+            } else {
+                sourcesDiv.innerHTML = '<p style="color: #718096;">No sources found</p>';
+            }
+
+            // Display metadata
+            document.getElementById('docCount').textContent = data.documents_found || 0;
+            document.getElementById('procTime').textContent =
+                data.processing_time ? `${data.processing_time.toFixed(2)}s` : '0s';
+
+            // Show results
+            results.classList.add('active');
+        }
+
+        function showError(message) {
+            error.textContent = message;
+            error.classList.add('active');
+        }
+
+        function clearResults() {
+            queryInput.value = '';
+            results.classList.remove('active');
+            error.classList.remove('active');
+            queryInput.focus();
+        }
+    </script>
+</body>
+</html>

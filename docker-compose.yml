@@ -1,0 +1,50 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+  data-ingestion:
+    container_name: data-ingestion
+    depends_on:
+      - qdrant
+    build:
+      context: ./data-ingestion
+      dockerfile: Dockerfile
+    image: data-ingestion:latest
+    ports:
+      - "5001:5001"
+    environment:
+      - PORT=5001
+      - QDRANT_URL=http://qdrant:6333
+    env_file:
+      - .env
+    volumes:
+      - ./data-ingestion/output:/app/output
+    restart: "no"
+
+  chatbot:
+    container_name: chatbot
+    depends_on:
+      - qdrant
+    build:
+      context: ./chatbot
+      dockerfile: Dockerfile
+    image: chatbot:latest
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - QDRANT_URL=http://qdrant:6333
+      - COLLECTION_NAME=caselaw-chunks-scotus
+      - EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+      - OPENAI_MODEL=gpt-4o-mini
+      - MAX_RESULTS=3
+    env_file:
+      - .env
+    restart: unless-stopped

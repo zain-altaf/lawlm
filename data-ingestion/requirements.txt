@@ -1,0 +1,9 @@
+python-dotenv
+requests
+beautifulsoup4
+qdrant-client
+sentence-transformers
+langchain-text-splitters
+numpy
+pyyaml
+fastembed

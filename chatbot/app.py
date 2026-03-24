@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""
+Legal RAG Chatbot Service
+
+A Flask-based REST API for legal document queries using hybrid search.
+Combines semantic (dense) and keyword (BM25) search with OpenAI for summaries.
+"""
+
+import logging
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request, send_from_directory
+from flask_cors import CORS
+from openai import OpenAI
+from qdrant_client import QdrantClient, models
+from sentence_transformers import SentenceTransformer
+
+load_dotenv()
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)
+
+# Configuration from environment
+QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "caselaw-chunks-scotus")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MAX_RESULTS = int(os.getenv("MAX_RESULTS", "3"))
+PORT = int(os.getenv("PORT", "5000"))
+
+# Initialize clients
+logger.info(f"Initializing chatbot service...")
+logger.info(f"Qdrant URL: {QDRANT_URL}")
+logger.info(f"Collection: {COLLECTION_NAME}")
+logger.info(f"Embedding model: {EMBEDDING_MODEL}")
+
+qdrant_client = QdrantClient(url=QDRANT_URL)
+logger.info("Connected to Qdrant")
+
+# Load embedding model
+logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
+embedder = SentenceTransformer(EMBEDDING_MODEL)
+embedder.eval()
+logger.info("Embedding model loaded")
+
+# Initialize OpenAI client
+OPENAI_AVAILABLE = False
+openai_client = None
+if os.getenv("OPENAI_API_KEY"):
+    try:
+        openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        OPENAI_AVAILABLE = True
+        logger.info("OpenAI client initialized")
+    except Exception as e:
+        logger.warning(f"OpenAI setup failed: {e}")
+else:
+    logger.warning("OPENAI_API_KEY not set. Summaries will be unavailable.")
+
+
+class LegalRAGService:
+    """
+    Legal RAG service for hybrid search and query processing.
+    """
+
+    def __init__(self):
+        self.qdrant_client = qdrant_client
+        self.embedder = embedder
+        self.collection_name = COLLECTION_NAME
+        self.openai_model = OPENAI_MODEL
+        self.max_results = MAX_RESULTS
+
+        # BGE models work better with specific prompts
+        if 'bge' in EMBEDDING_MODEL.lower():
+            self.query_prefix = "Represent this query for searching relevant legal passages: "
+        else:
+            self.query_prefix = ""
+
+        # Verify collection exists
+        if not self.qdrant_client.collection_exists(self.collection_name):
+            logger.error(f"Collection '{self.collection_name}' not found!")
+            raise ValueError(f"Collection '{self.collection_name}' does not exist")
+
+        # Get collection info
+        info = self.qdrant_client.get_collection(self.collection_name)
+        logger.info(f"Collection has {info.points_count} chunks")
+
+    def hybrid_search(
+        self,
+        query: str,
+        limit: int = 3,
+        score_threshold: float = 0.4
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform hybrid search using Reciprocal Rank Fusion (RRF).
+
+        Combines dense vector search (semantic) with sparse BM25 search (keyword).
+
+        Args:
+            query: Search query text
+            limit: Number of results to return
+            score_threshold: Minimum score threshold
+
+        Returns:
+            List of search results with scores and payloads
+        """
+        logger.info(f"Hybrid search: '{query}' (limit={limit}, threshold={score_threshold})")
+
+        try:
+            # Create enhanced query with BGE prefix if applicable
+            enhanced_query = self.query_prefix + query if self.query_prefix else query
+
+            # Create dense vector for the query
+            query_vector = self.embedder.encode(enhanced_query).tolist()
+
+            # Perform hybrid search with RRF using prefetch
+            search_result = self.qdrant_client.query_points(
+                collection_name=self.collection_name,
+                prefetch=[
+                    # Dense vector search (semantic)
+                    models.Prefetch(
+                        query=query_vector,
+                        using="bge-small",
+                        limit=(5 * limit),  # Fetch more for better fusion
+                    ),
+                    # Sparse vector search (keyword/BM25)
+                    models.Prefetch(
+                        query=models.Document(
+                            text=query,
+                            model="Qdrant/bm25",
+                        ),
+                        using="bm25",
+                        limit=(5 * limit),
+                    ),
+                ],
+                # Use RRF to combine results
+                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False
+            )
+
+            # Format results
+            results = []
+            for point in search_result.points:
+                result = {
+                    'id': point.id,
+                    'score': point.score,
+                    'payload': point.payload,
+                    'search_type': 'hybrid_rrf'
+                }
+                results.append(result)
+
+            logger.info(f"Found {len(results)} results")
+            return results
+
+        except Exception as e:
+            logger.error(f"Hybrid search failed: {e}")
+            raise
+
+    def format_search_results(self, results: List[Dict[str, Any]]) -> str:
+        """
+        Format search results into context for OpenAI.
+
+        Args:
+            results: List of search results
+
+        Returns:
+            Formatted context string
+        """
+        if not results:
+            return "No relevant legal documents found."
+
+        context_parts = []
+        for i, result in enumerate(results, 1):
+            payload = result['payload']
+            case_name = payload.get('case_name', 'Unknown Case')
+            court = payload.get('court_id', 'Unknown Court')
+            date_filed = payload.get('date_filed', 'Unknown Date')
+            opinion_type = payload.get('opinion_type', '')
+            text = payload.get('text', '')
+            score = result.get('score', 0)
+
+            # Preview first 500 characters
+            text_preview = text.strip()[:500]
+
+            context_part = f"""
+Document {i} (Relevance: {score:.3f}):
+Case: {case_name}
+Court: {court.upper()}
+Date: {date_filed}
+Type: {opinion_type}
+Content: {text_preview}{"..." if len(text) > 500 else ""}
+"""
+            context_parts.append(context_part)
+
+        return "\n".join(context_parts)
+
+    def generate_summary(self, query: str, context: str) -> str:
+        """
+        Generate concise summary using OpenAI API.
+
+        Args:
+            query: Original user query
+            context: Formatted search results
+
+        Returns:
+            Generated summary or fallback message
+        """
+        if not OPENAI_AVAILABLE or not openai_client:
+            return f"OpenAI not available. Found {len(context.split('Document'))-1} relevant documents."
+
+        system_prompt = """You are a legal research assistant. Based on the provided legal document excerpts, provide a concise and accurate summary that directly answers the user's question.
+
+Guidelines:
+- Keep response to exactly 150 words or less
+- Focus on the most relevant legal information
+- Include case names and key legal principles when relevant
+- Be precise and authoritative
+- If the documents don't fully answer the question, state what information is available
+- Use clear, professional legal language"""
+
+        user_prompt = f"""Query: {query}
+
+Relevant Legal Documents:
+{context}
+
+Please provide a concise 150-word summary that answers the query based on these legal documents."""
+
+        try:
+            response = openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=200,
+                temperature=0.1,
+                top_p=0.95
+            )
+
+            summary = response.choices[0].message.content.strip()
+            logger.info(f"Generated {len(summary.split())} word summary")
+            return summary
+
+        except Exception as e:
+            logger.error(f"OpenAI API error: {e}")
+            return f"Error generating summary. Found relevant information about: {query}"
+
+    def query(
+        self,
+        question: str,
+        score_threshold: float = 0.4,
+        max_results: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Complete RAG query: search + generate summary.
+
+        Args:
+            question: User's legal question
+            score_threshold: Minimum relevance score
+            max_results: Maximum number of results (uses default if None)
+
+        Returns:
+            Dictionary with summary, sources, and metadata
+        """
+        start_time = datetime.now()
+        limit = max_results if max_results is not None else self.max_results
+
+        # Step 1: Search relevant documents
+        try:
+            search_results = self.hybrid_search(
+                query=question,
+                limit=limit,
+                score_threshold=score_threshold
+            )
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return {
+                "question": question,
+                "summary": f"Search failed: {str(e)}",
+                "sources": [],
+                "search_type": "hybrid_rrf",
+                "processing_time": (datetime.now() - start_time).total_seconds(),
+                "documents_found": 0,
+                "error": str(e)
+            }
+
+        if not search_results:
+            return {
+                "question": question,
+                "summary": "No relevant legal documents found for this query. Try rephrasing your question or using different keywords.",
+                "sources": [],
+                "search_type": "hybrid_rrf",
+                "processing_time": (datetime.now() - start_time).total_seconds(),
+                "documents_found": 0
+            }
+
+        # Step 2: Format context for OpenAI
+        context = self.format_search_results(search_results)
+
+        # Step 3: Generate summary
+        summary = self.generate_summary(question, context)
+
+        # Step 4: Prepare sources information
+        sources = []
+        for result in search_results:
+            payload = result['payload']
+            source = {
+                "case_name": payload.get('case_name', 'Unknown Case'),
+                "court": payload.get('court_id', 'Unknown'),
+                "date_filed": payload.get('date_filed', 'Unknown'),
+                "opinion_type": payload.get('opinion_type', ''),
+                "relevance_score": result.get('score', 0),
+                "chunk_id": payload.get('chunk_id', ''),
+                "text": payload.get('text', ''),
+                "download_url": payload.get('download_url', '')
+            }
+            sources.append(source)
+
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        return {
+            "question": question,
+            "summary": summary,
+            "sources": sources,
+            "search_type": "hybrid_rrf",
+            "processing_time": processing_time,
+            "documents_found": len(search_results)
+        }
+
+
+# Initialize RAG service
+rag_service = LegalRAGService()
+
+
+# API Routes
+
+@app.route('/', methods=['GET'])
+def index():
+    """Serve the web interface."""
+    return send_from_directory('static', 'index.html')
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint."""
+    try:
+        # Check Qdrant connection
+        collections = qdrant_client.get_collections()
+        collection_exists = qdrant_client.collection_exists(COLLECTION_NAME)
+
+        return jsonify({
+            "status": "healthy",
+            "qdrant_connected": True,
+            "collection_exists": collection_exists,
+            "collection_name": COLLECTION_NAME,
+            "openai_available": OPENAI_AVAILABLE,
+            "embedding_model": EMBEDDING_MODEL
+        }), 200
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e)
+        }), 500
+
+
+@app.route('/query', methods=['POST'])
+def query_endpoint():
+    """
+    Query endpoint for legal RAG.
+
+    Request body:
+    {
+        "question": "What is the holding in Brown v. Board of Education?",
+        "score_threshold": 0.4,  // optional, default 0.4
+        "max_results": 3         // optional, default from env
+    }
+
+    Response:
+    {
+        "question": "...",
+        "summary": "...",
+        "sources": [...],
+        "search_type": "hybrid_rrf",
+        "processing_time": 1.23,
+        "documents_found": 3
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'question' not in data:
+            return jsonify({
+                "error": "Missing 'question' field in request body"
+            }), 400
+
+        question = data['question']
+        score_threshold = data.get('score_threshold', 0.4)
+        max_results = data.get('max_results', None)
+
+        logger.info(f"Received query: '{question}'")
+
+        result = rag_service.query(
+            question=question,
+            score_threshold=score_threshold,
+            max_results=max_results
+        )
+
+        return jsonify(result), 200
+
+    except Exception as e:
+        logger.error(f"Query endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+@app.route('/search', methods=['POST'])
+def search_endpoint():
+    """
+    Search endpoint for hybrid search only (no summarization).
+
+    Request body:
+    {
+        "query": "Fourth Amendment search and seizure",
+        "limit": 3,              // optional, default 3
+        "score_threshold": 0.4   // optional, default 0.4
+    }
+
+    Response:
+    {
+        "query": "...",
+        "results": [...],
+        "search_type": "hybrid_rrf",
+        "processing_time": 0.45,
+        "documents_found": 3
+    }
+    """
+    try:
+        data = request.get_json()
+
+        if not data or 'query' not in data:
+            return jsonify({
+                "error": "Missing 'query' field in request body"
+            }), 400
+
+        query = data['query']
+        limit = data.get('limit', 3)
+        score_threshold = data.get('score_threshold', 0.4)
+
+        logger.info(f"Received search: '{query}'")
+
+        start_time = datetime.now()
+        results = rag_service.hybrid_search(
+            query=query,
+            limit=limit,
+            score_threshold=score_threshold
+        )
+        processing_time = (datetime.now() - start_time).total_seconds()
+
+        return jsonify({
+            "query": query,
+            "results": results,
+            "search_type": "hybrid_rrf",
+            "processing_time": processing_time,
+            "documents_found": len(results)
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Search endpoint error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+@app.route('/collection/info', methods=['GET'])
+def collection_info():
+    """Get information about the Qdrant collection."""
+    try:
+        info = qdrant_client.get_collection(COLLECTION_NAME)
+
+        return jsonify({
+            "collection_name": COLLECTION_NAME,
+            "points_count": info.points_count,
+            "vectors_count": info.vectors_count,
+            "indexed_vectors_count": info.indexed_vectors_count,
+            "status": info.status
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Collection info error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+if __name__ == '__main__':
+    logger.info(f"Starting Legal RAG Chatbot Service on port {PORT}")
+    app.run(host='0.0.0.0', port=PORT, debug=False)
